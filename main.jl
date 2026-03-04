@@ -6,7 +6,6 @@ using Random
 struct ExcursionProblem
     rewards::Matrix{Float64}
     trajectory_length::Int
-    γ::Float64
 end
 
 function reward(problem::ExcursionProblem, s, a, s′)
@@ -50,13 +49,11 @@ function Base.iterate(iter::ExcursionStateSpace, state)
     x, t = state
     T = problem.trajectory_length
 
-    # We only iterate over non-terminal states t in 0:(T-1)
     if T == 0
         return nothing
     end
 
     if t == 0
-        # After the initial state (0,0), move to t=1, x=-1 if horizon allows
         if T > 1
             next_state = (-1, 1)
             return next_state, next_state
@@ -65,12 +62,10 @@ function Base.iterate(iter::ExcursionStateSpace, state)
         end
     end
 
-    # For t ≥ 1, reachable x are -t, -t+2, ..., t
     if x < t
         next_state = (x + 2, t)
         return next_state, next_state
     else
-        # x == t, advance to next time layer if it exists
         if t >= T - 1
             return nothing
         else
@@ -81,274 +76,222 @@ function Base.iterate(iter::ExcursionStateSpace, state)
     end
 end
 
+struct Trajectory
+    states::Vector{Tuple{Int64,Int64}}
+    rewards::Vector{Float64}
+    actions::Vector{Int64}
+end
 
-# Algorithm
-struct WatkinsQLearning{AQ}
-    Q::AQ
-    alpha::Float64
-    epsilon::Float64
+function Trajectory(s::Tuple{Int64,Int64})
+    Trajectory([s], Float64[], Int64[])
 end
-function get_q_value(alg::WatkinsQLearning, problem::ExcursionProblem, s, a)
-    x, t = s 
-    Q = alg.Q # A matrix
-    return Q[x + problem.trajectory_length + 1, t+1, a]
-end
-function set_q_value!(alg::WatkinsQLearning, problem::ExcursionProblem, s, a, new_value)
-    x, t = s 
-    Q = alg.Q # A matrix
-    Q[x + problem.trajectory_length + 1, t+1, a] = new_value
-    new_value
-end
-function greedy_action(alg::WatkinsQLearning, problem::ExcursionProblem, s)
-    x, t = s 
-    Q = alg.Q # A matrix
-    state_q_values = @views Q[x + problem.trajectory_length + 1, t+1, :]
-    best_action = argmax(state_q_values)
-    return best_action
-end
-function value(alg::WatkinsQLearning, problem::ExcursionProblem, s)
-    x, t = s 
-    Q = alg.Q # A matrix
-    state_q_values = @views Q[x + problem.trajectory_length + 1, t+1, :]
-    best_value = maximum(state_q_values)
-    return best_value
-end
-function epsilon_greedy_action(alg::WatkinsQLearning, problem, s)
-    if rand() < alg.epsilon
-        return Random.rand(action_space(problem, s))
+
+function partial_returns(traj::Trajectory,discount::Float64)
+    returns = Float64[]
+    cumulative_return = 0.0
+    for r in Iterators.reverse(traj.rewards)
+        cumulative_return = r + (discount*cumulative_return)
+        pushfirst!(returns, cumulative_return)
     end
-    return greedy_action(alg, problem, s)
-end
-function step_q_function!(alg::WatkinsQLearning, problem::ExcursionProblem, state, action, next_state, reward)
-    α = alg.alpha
-    γ = problem.γ
-
-    current_q_value = get_q_value(alg, problem, state, action)
-    target = reward + γ * value(alg, problem, next_state)
-
-    set_q_value!(alg, problem, state, action, (1-α) * current_q_value + α * target)
-    nothing
+    return returns 
 end
 
-# Exact dynamic programming solution (deterministic environment)
-struct ExactExcursionAlgorithm{AV, AP}
-    values::AV
-    policy::AP
+function n_transitions(traj::Trajectory)
+    @assert length(traj.actions) == length(traj.rewards)
+    @assert length(traj.actions) == length(traj.states) - 1
+    return length(traj.actions)
 end
 
-
-function value(alg::ExactExcursionAlgorithm, problem::ExcursionProblem, s)
-    x, t = s
-    return alg.values[x + problem.trajectory_length + 1, t + 1]
-end
-function set_value!(alg::ExactExcursionAlgorithm, problem::ExcursionProblem, s, new_value)
-    x, t = s
-    alg.values[x + problem.trajectory_length + 1, t + 1] = new_value
-end
-function get_policy(alg::ExactExcursionAlgorithm, problem::ExcursionProblem, s)
-    x, t = s
-    return alg.policy[x + problem.trajectory_length + 1, t + 1]
-end
-function set_policy!(alg::ExactExcursionAlgorithm, problem::ExcursionProblem, s, new_policy)
-    x, t = s
-    alg.policy[x + problem.trajectory_length + 1, t + 1] = new_policy
+function append_transition(traj::Trajectory, next_state::Tuple{Int64,Int64}, action::Int64, reward::Float64)
+    push!(traj.states, next_state)
+    push!(traj.actions, action)
+    push!(traj.rewards, reward)
 end
 
-function greedy_action(alg::ExactExcursionAlgorithm, problem::ExcursionProblem, s)
-    return argmax(a -> begin
-        s′ = next_state(problem, s, a)
-        r = reward(problem, s, a, s′)
-        next_value = value(alg, problem, s′)
-        return r + problem.γ * next_value
-    end, action_space(problem, s))
+function transitions(traj::Trajectory, discount::Float64)
+    T = n_transitions(traj)
+    out = Vector{Tuple{Tuple{Int64,Int64},Int64,Tuple{Int64,Int64},Float64,Float64}}(undef, T)
+    return_to_go = 0.0
+    for t in T:-1:1 #T:-1:1 does reverse
+        return_to_go = traj.rewards[t] + (discount*return_to_go)
+        out[t] = (traj.states[t], traj.actions[t], traj.states[t+1], traj.rewards[t], return_to_go)
+    end
+    return out
 end
 
-function iterate_values!(alg::ExactExcursionAlgorithm, problem::ExcursionProblem)
-    has_changed = false
+function sigmoid(x::Float64)
+    return 1/(1+exp(-x))
+end
+
+struct PolicyGradient
+    discount:: Float64
+    _policy_parameters::Dict{Tuple{Int64,Int64},Float64}
+    _parameter_gradients::Dict{Tuple{Int64,Int64},Float64}
+end
+
+function init_pga(pga::PolicyGradient, problem::ExcursionProblem)
     for s in state_space(problem)
         if is_terminal(problem, s)
-            continue # skip terminal states
+            continue
         end
-
-        a = get_policy(alg, problem, s)
-        s′ = next_state(problem, s, a)
-        r = reward(problem, s, a, s′)
-        next_value = r + problem.γ * value(alg, problem, s′)
-
-        current_value = value(alg, problem, s)
-        if next_value != current_value
-            set_value!(alg, problem, s, next_value)
-            has_changed = true
-        end
+        pga._policy_parameters[s] = randn()*0.01
+        pga._parameter_gradients[s] = 0.0
     end
-    return has_changed
-end
-function iterate_policy!(alg::ExactExcursionAlgorithm, problem::ExcursionProblem)
-    has_changed = false
-    for s in state_space(problem)
-        if is_terminal(problem, s)
-            continue # skip terminal states
-        end
-
-        existing_a = get_policy(alg, problem, s)
-        new_a = greedy_action(alg, problem, s)
-
-        if new_a != existing_a
-            has_changed = true
-            set_policy!(alg, problem, s, new_a)
-        end
-    end
-    return has_changed
 end
 
-function solve!(alg::ExactExcursionAlgorithm, problem::ExcursionProblem)
+function greedy_policy(pga::PolicyGradient)
+    policy = Dict{Tuple{Int64,Int64},Int64}()
+    for (state,value) in pga._policy_parameters 
+        if sigmoid(value) > 0.5
+            policy[state] = 2
+        else 
+            policy[state] = 1
+        end
+    end
+    return policy
+end
+
+function sample_action(pga::PolicyGradient, state)
+    p_up = sigmoid(pga._policy_parameters[state])
+    action = rand() < p_up ? 2 : 1
+    return action    
+end
+
+function _reset_gradients(pga::PolicyGradient)
+    for state in keys(pga._parameter_gradients)
+        pga._parameter_gradients[state] = 0.0
+    end
+end
+
+function sample_trajectory!(pga::PolicyGradient, traj::Trajectory, problem::ExcursionProblem, s0::Tuple{Int64,Int64})
+    empty!(traj.states)
+    empty!(traj.actions)
+    empty!(traj.rewards)
+    push!(traj.states, s0)
+
     while true
-        while iterate_values!(alg, problem) end
-
-        if !iterate_policy!(alg, problem) # False when no policy has been updated
+        current_state = traj.states[end]
+        if is_terminal(problem, current_state)
             break
         end
+        action = sample_action(pga, current_state)
+        ns = next_state(problem, current_state, action)
+        r = reward(problem, current_state, action, ns)
+        append_transition(traj, ns, action, r)
     end
-    nothing
 end
 
-function exact_solution(problem::ExcursionProblem)
-    values = zeros(2*problem.trajectory_length+1, problem.trajectory_length+1)
-    policy = ones(Int, 2*problem.trajectory_length+1, problem.trajectory_length+1)
-
-    alg = ExactExcursionAlgorithm(values, policy)
-    solve!(alg, problem)
-    return alg
+function accumulate_gradient(pga::PolicyGradient, state, action, return_to_go)
+    probs = sigmoid(pga._policy_parameters[state])
+    a_binary = action - 1 #sigmoid expects range 0-1 (binary function)
+    pga._parameter_gradients[state] += (a_binary - probs) * return_to_go
 end
 
-# Training function
-function train!(alg::WatkinsQLearning, problem::ExcursionProblem; steps::Int=1000)
-    s = starting_state(problem)
-    for _ in 1:steps
-        # Sample action and next state
-        a = epsilon_greedy_action(alg, problem, s)
-        s′ = next_state(problem, s, a)
-        r = reward(problem, s, a, s′)
+function train!(pga::PolicyGradient, problem::ExcursionProblem, epochs::Int64, learning_rate::Float64, batch_size::Int64)
+    avg_returns = Float64[]
+    s0 = starting_state(problem)
+    traj = Trajectory(s0)  
 
-        # Actually learn from the experience
-        step_q_function!(alg, problem, s, a, s′, r)
+    for _ in 1:epochs
+        _reset_gradients(pga)
+        total_return = 0.0
+        for _ in 1:batch_size 
+            sample_trajectory!(pga, traj, problem, s0)
+            pass = transitions(traj, pga.discount)
+            final_return =  pass[1][5]
+            for row in pass
+                accumulate_gradient(pga, row[1], row[2], row[5])
+            end
+            total_return += final_return
+        end
+        average_return = total_return / batch_size
+        push!(avg_returns, average_return)
 
-        # Transition to next state
-        if is_terminal(problem, s′)
-            s = starting_state(problem)
-        else
-            s = s′
+        for state in keys(pga._parameter_gradients)
+            pga._policy_parameters[state] += (learning_rate / batch_size) * pga._parameter_gradients[state]
         end
     end
+    return avg_returns  
 end
 
-# Diagnostic function
-function score_trajectory(alg, problem::ExcursionProblem)
+function greedy_trajectory_xs(greedy::Dict, problem::ExcursionProblem)
     s = starting_state(problem)
-    return score_trajectory(alg, problem, s)
-end
-function score_trajectory(alg, problem::ExcursionProblem, s)
-    total_reward = 0
-    discount = 1.0
+    xs = [s[1]]
     while !is_terminal(problem, s)
-        a = greedy_action(alg, problem, s)
-        s′ = next_state(problem, s, a)
-        r = reward(problem, s, a, s′)
-        
-        total_reward += r * discount
-        discount *= problem.γ
-        # Update the state
-        s = s′
+        a = get(greedy, s, 1)
+        s = next_state(problem, s, a)
+        push!(xs, s[1])
     end
-    return total_reward
+    return xs
 end
 
-# Sample Trajectory
-function trajectory(alg, problem::ExcursionProblem)
+function sampled_trajectory_xs(pga::PolicyGradient, problem::ExcursionProblem)
     s = starting_state(problem)
-    total_reward = 0
-    discount = 1.0
-    positions = zeros(Int, problem.trajectory_length+1)
-    positions[1] = 0
-    t = 0
+    xs = [s[1]]
     while !is_terminal(problem, s)
-        a = greedy_action(alg, problem, s)
-        s′ = next_state(problem, s, a)
-        r = reward(problem, s, a, s′)
-        
-        total_reward += r * discount
-        discount *= problem.γ
-        # Update the state
-        s = s′
-        t += 1
-        positions[t+1] = s[1] # s[1] is the position (x, t) is the state
+        a = sample_action(pga, s)
+        s = next_state(problem, s, a)
+        push!(xs, s[1])
     end
-    return positions, total_reward
+    return xs
 end
 
-# Training
 function main()
-    Random.seed!(1234)
-    # Define the problem
-    T = 20
-    bias = 0.5
-    R = Random.randn(Float64, 2T+1, T) # (x', t')
-    R[1:T, :] .-= 10 # Strongly discourage negative x values
-    R[:, T] .= (-T:T) .^ 2 .* (-bias) # Set a potential well at the end time
+    Random.seed!(67)
+    T = 30
+    bias = 5.0
+    R = Random.randn(Float64, 2T+1, T)
+    R[1:T, :] .-= 100
+    R[:, T] .= (-T:T) .^ 2 .* (-bias)
 
-    # Define the agent
-    Q = ones(Float64, 2T + 1, T+1, 2) # (x, t, a), note that a = 2 (↑) and a = 1 (↓)
+    γ = 0.9
+    α = 0.1
 
-    # Define training parameters
-    γ = 1.0
-    α = 1.0
-    ϵ = 0.2
+    problem = ExcursionProblem(R, T)
+    params = Dict{Tuple{Int64,Int64},Float64}()  
+    gradients = Dict{Tuple{Int64,Int64},Float64}()
+    pga = PolicyGradient(γ, params, gradients)
+    init_pga(pga, problem)
+    epochs = 100
+    batch_size = 32
+    avg_returns = train!(pga, problem, epochs, α, batch_size)
 
-    problem = ExcursionProblem(R, T, γ)
-    alg = WatkinsQLearning(Q, α, ϵ)
+    greedy = greedy_policy(pga)
 
-    # Compute exact solution for comparison
-    exact_alg = exact_solution(problem)
-    best_value = value(exact_alg, problem, starting_state(problem))
-
-    chunks = 100
-    steps_per_chunk = 100
-
-    returns = zeros(Float64, chunks+1)
-    returns[begin] = score_trajectory(alg, problem)
-
-    for i in ProgressBar(1:chunks)
-        train!(alg, problem; steps=steps_per_chunk)
-        # Keep track of the score of the policy over time
-        returns[i+1] = score_trajectory(alg, problem)
-    end
-
+    n_samples = 5
+    ts = 0:T
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        ax = CairoMakie.Axis(fig[1,1], xlabel="Steps", ylabel="<G>", xscale=log10)
-        steps_axis = 1:steps_per_chunk:(steps_per_chunk*(1+chunks))
+        ax = CairoMakie.Axis(fig[1,1], xlabel="t", ylabel="x", title="Rare Event Trajectories")
 
-        lines!(ax, steps_axis, returns, label="Returns")
-        lines!(ax, steps_axis, fill(best_value, length(returns)); linestyle=:dash, color=:black, label="Best value")
+        for i in 1:n_samples
+            xs = sampled_trajectory_xs(pga, problem)
+            lines!(ax, collect(ts), xs, color=(:blue, 0.25), linewidth=1,
+                label= i == 1 ? "Sampled (n=$n_samples)" : nothing)
+        end
+
+        greedy_xs = greedy_trajectory_xs(greedy, problem)
+        lines!(ax, collect(ts), greedy_xs, color=:red, linewidth=2.5, label="Greedy")
+
+        axislegend(ax, unique=true)
+        save("Rare_events.pdf",fig)
         fig
     end
     display(fig)
 
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        ax = CairoMakie.Axis(fig[1,1], xlabel="t", ylabel="x")
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards")
+        x_ax = 1:epochs
 
-        positions, _ = trajectory(alg, problem)
+        lines!(ax, collect(x_ax), avg_returns, color=:red, linewidth=2.5, label="avg returns")
 
-        lines!(ax, 0:(length(positions)-1), positions, color=:red)
-
-
-        exact_positions, _ = trajectory(exact_alg, problem)
-
-        lines!(ax, 0:(length(exact_positions)-1), exact_positions, color=:blue, linestyle=:dash, alpha=0.8)
+        axislegend(ax, unique=true)  
+        save("Rewards.pdf",fig)
         fig
     end
     display(fig)
 
-    return alg, problem, returns
+
+    return pga, problem, avg_returns, greedy
 end
