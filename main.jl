@@ -176,7 +176,10 @@ function sample_trajectory!(pga::PolicyGradient, traj::Trajectory, problem::Excu
         end
         action = sample_action(pga, current_state)
         ns = next_state(problem, current_state, action)
-        r = reward(problem, current_state, action, ns)
+        p_up = sigmoid(pga._policy_parameters[current_state])
+        p_action = action == 2 ? p_up : 1-p_up
+        # 0.5 is the uniform probability
+        r = reward(problem, current_state, action, ns) - log(p_action/0.5)
         append_transition(traj, ns, action, r)
     end
 end
@@ -241,7 +244,8 @@ function main()
     T = 30
     bias = 5.0
     R = Random.randn(Float64, 2T+1, T)
-    R[1:T, :] .-= 100
+    #R = zeros( 2T+1, T)
+    R[1:T+1, :] .-= 10
     R[:, T] .= (-T:T) .^ 2 .* (-bias)
 
     γ = 0.9
@@ -252,13 +256,13 @@ function main()
     gradients = Dict{Tuple{Int64,Int64},Float64}()
     pga = PolicyGradient(γ, params, gradients)
     init_pga(pga, problem)
-    epochs = 100
+    epochs = 1000
     batch_size = 32
     avg_returns = train!(pga, problem, epochs, α, batch_size)
 
     greedy = greedy_policy(pga)
 
-    n_samples = 5
+    n_samples = 30
     ts = 0:T
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
@@ -266,12 +270,12 @@ function main()
 
         for i in 1:n_samples
             xs = sampled_trajectory_xs(pga, problem)
-            lines!(ax, collect(ts), xs, color=(:blue, 0.25), linewidth=1,
+            lines!(ax, collect(ts), xs, color=(:blue, 0.20), linewidth=1,
                 label= i == 1 ? "Sampled (n=$n_samples)" : nothing)
         end
 
-        greedy_xs = greedy_trajectory_xs(greedy, problem)
-        lines!(ax, collect(ts), greedy_xs, color=:red, linewidth=2.5, label="Greedy")
+        # greedy_xs = greedy_trajectory_xs(greedy, problem)
+        # lines!(ax, collect(ts), greedy_xs, color=:red, linewidth=2.5, label="Greedy")
 
         axislegend(ax, unique=true)
         save("Rare_events.pdf",fig)
