@@ -195,7 +195,13 @@ function train!(pga::PolicyGradient, problem::ExcursionProblem, epochs::Int64, l
     s0 = starting_state(problem)
     traj = Trajectory(s0)  
 
-    for _ in 1:epochs
+    for i in 1:epochs
+        if i % 10 == 0
+            percent_done = i*100/epochs 
+            current_reward = isempty(avg_returns)  ? "no reward yet" : avg_returns[end] 
+            println("completed $i / $epochs samples. $percent_done% complete.")
+            println("current reward: $current_reward")
+        end
         _reset_gradients(pga)
         total_return = 0.0
         for _ in 1:batch_size 
@@ -241,8 +247,8 @@ end
 
 function main()
     Random.seed!(67)
-    T = 30
-    bias = 5.0
+    T = 300
+    bias = 50.0
     R = Random.randn(Float64, 2T+1, T)
     #R = zeros( 2T+1, T)
     R[1:T+1, :] .-= 10
@@ -256,7 +262,7 @@ function main()
     gradients = Dict{Tuple{Int64,Int64},Float64}()
     pga = PolicyGradient(γ, params, gradients)
     init_pga(pga, problem)
-    epochs = 1000
+    epochs = 500
     batch_size = 32
     avg_returns = train!(pga, problem, epochs, α, batch_size)
 
@@ -297,5 +303,6 @@ function main()
     display(fig)
 
 
-    return pga, problem, avg_returns, greedy
+    #return pga, problem, avg_returns, greedy
+    return avg_returns
 end
