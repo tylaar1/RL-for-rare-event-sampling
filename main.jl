@@ -6,9 +6,10 @@ using Random
 struct ExcursionProblem
     rewards::Matrix{Float64}
     trajectory_length::Int
+    γ::Float64
 end
 
-function reward(problem::ExcursionProblem, s, a, s′)
+function reward(problem::ExcursionProblem, s′)
     x′, t′ = s′
     problem.rewards[x′ + problem.trajectory_length + 1, t′]
 end
@@ -30,6 +31,17 @@ end
 # Stateless iterator over all states reachable from (0,0) using only ↑, ↓ until terminal
 struct ExcursionStateSpace
     problem::ExcursionProblem
+end
+
+Base.eltype(::Type{ExcursionStateSpace}) = Tuple{Int,Int}
+
+Base.IteratorEltype(::Type{ExcursionStateSpace}) = Base.HasEltype()
+
+Base.IteratorSize(::Type{ExcursionStateSpace}) = Base.HasLength()
+
+function Base.length(iter::ExcursionStateSpace)
+    T = iter.problem.trajectory_length
+    return T*(T+1) ÷ 2
 end
 
 """Create a stateless iterator over the state space of an `ExcursionProblem`."""
@@ -179,7 +191,7 @@ function sample_trajectory!(pga::PolicyGradient, traj::Trajectory, problem::Excu
         p_up = sigmoid(pga._policy_parameters[current_state])
         p_action = action == 2 ? p_up : 1-p_up
         # 0.5 is the uniform probability
-        r = reward(problem, current_state, action, ns) - log(p_action/0.5)
+        r = reward(problem, ns) - log(p_action/0.5)
         append_transition(traj, ns, action, r)
     end
 end
@@ -196,11 +208,11 @@ function train!(pga::PolicyGradient, problem::ExcursionProblem, epochs::Int64, l
     traj = Trajectory(s0)  
 
     for i in 1:epochs
-        if i % 10 == 0
+        if i % 100 == 0
             percent_done = i*100/epochs 
             current_reward = isempty(avg_returns)  ? "no reward yet" : avg_returns[end] 
             println("completed $i / $epochs samples. $percent_done% complete.")
-            println("current reward: $current_reward")
+            println("most recent returns: $current_reward")
         end
         _reset_gradients(pga)
         total_return = 0.0
@@ -245,29 +257,109 @@ function sampled_trajectory_xs(pga::PolicyGradient, problem::ExcursionProblem)
     return xs
 end
 
+struct ExactSolution
+    values::Dict{Tuple{Int64,Int64},Float64}
+    policy::Dict{Tuple{Int64,Int64},Float64}
+end
+
+function calculate_policy!(problem::ExcursionProblem,solution::ExactSolution,s)
+    x,t = s
+    if t == problem.trajectory_length - 1
+        s_prime_up = x+1,t+1
+        s_prime_down = x-1,t+1
+        v_star = log(0.5*exp(reward(problem,s_prime_up))+0.5*exp(reward(problem,s_prime_down)))
+        solution.values[s] = v_star
+        p_up=0.5*exp(reward(problem,s_prime_up))/exp(v_star)
+        solution.policy[s] = p_up
+    else
+        s_prime_up = x+1,t+1
+        s_prime_down = x-1,t+1
+        v_star = log(0.5*exp(reward(problem,s_prime_up)+(problem.γ*solution.values[s_prime_up]))+0.5*exp(reward(problem,s_prime_down)+(problem.γ*solution.values[s_prime_down])))
+        solution.values[s] = v_star
+        p_up=0.5*exp(reward(problem,s_prime_up)+(problem.γ*solution.values[s_prime_up]))/exp(v_star)
+        solution.policy[s] = p_up
+    end
+end
+
+#claude generated function
+function plot_policy_comparison(pga::PolicyGradient, solution::ExactSolution, problem::ExcursionProblem)
+    T = problem.trajectory_length
+    for t in 1:T
+        for x in -t:2:t
+            if !haskey(solution.policy, (x,t))
+                println("missing: ($x, $t)")
+            end
+        end
+    end
+    exact_matrix   = fill(NaN, 2T+1, T)
+    learned_matrix = fill(NaN, 2T+1, T)
+    diff_matrix    = fill(NaN, 2T+1, T)
+
+    for (s, p_exact) in solution.policy
+        x, t = s
+        if t == 0 continue end  # skip t=0 for cleaner plot, only one state
+        p_learned = sigmoid(pga._policy_parameters[s])
+        row = x + T + 1
+        exact_matrix[row, t]   = p_exact
+        learned_matrix[row, t] = p_learned
+        diff_matrix[row, t]    = p_learned - p_exact
+    end
+
+    fig = CairoMakie.Figure(size=(1400, 500))
+
+    ax1 = CairoMakie.Axis(fig[1,1], xlabel="t", ylabel="x", title="Exact Policy (p_up)")
+    hm1 = heatmap!(ax1, 1:T, -T:T, exact_matrix', colormap=:RdBu, colorrange=(0,1))
+    Colorbar(fig[1,2], hm1)
+
+    ax2 = CairoMakie.Axis(fig[1,3], xlabel="t", ylabel="x", title="Learned Policy (p_up)")
+    hm2 = heatmap!(ax2, 1:T, -T:T, learned_matrix', colormap=:RdBu, colorrange=(0,1))
+    Colorbar(fig[1,4], hm2)
+
+    ax3 = CairoMakie.Axis(fig[1,5], xlabel="t", ylabel="x", title="Difference (Learned - Exact)")
+    hm3 = heatmap!(ax3, 1:T, -T:T, diff_matrix', colormap=:RdBu, colorrange=(-1,1))
+    Colorbar(fig[1,6], hm3)
+
+    save("policy_comparison.pdf", fig)
+    display(fig)
+    return fig
+end
+
 function main()
     Random.seed!(67)
-    T = 300
+    T = 20
     bias = 50.0
     R = Random.randn(Float64, 2T+1, T)
     #R = zeros( 2T+1, T)
-    R[1:T+1, :] .-= 10
+    R[1:T+1, :] .-= 1
     R[:, T] .= (-T:T) .^ 2 .* (-bias)
 
-    γ = 0.9
+    γ = 1.0
     α = 0.1
 
-    problem = ExcursionProblem(R, T)
+    values = Dict{Tuple{Int64,Int64},Float64}()  
+    policy = Dict{Tuple{Int64,Int64},Float64}() 
+
+    problem = ExcursionProblem(R, T, γ)
     params = Dict{Tuple{Int64,Int64},Float64}()  
     gradients = Dict{Tuple{Int64,Int64},Float64}()
     pga = PolicyGradient(γ, params, gradients)
+    solution = ExactSolution(values,policy)
     init_pga(pga, problem)
-    epochs = 500
-    batch_size = 32
+    epochs = 10000
+    batch_size = 64
     avg_returns = train!(pga, problem, epochs, α, batch_size)
 
     greedy = greedy_policy(pga)
 
+    for s in state_space(problem)
+        solution.values[s] = 0.0
+        solution.policy[s] = 0.0
+    end
+    for s in reverse(collect(state_space(problem)))
+        calculate_policy!(problem,solution,s)
+    end
+    println(solution.values[(0,0)])
+    expected_returns_plotter = solution.values[(0,0)].*ones(epochs)
     n_samples = 30
     ts = 0:T
     fig = begin
@@ -295,14 +387,14 @@ function main()
         x_ax = 1:epochs
 
         lines!(ax, collect(x_ax), avg_returns, color=:red, linewidth=2.5, label="avg returns")
-
-        axislegend(ax, unique=true)  
+        lines!(ax,collect(x_ax), expected_returns_plotter, linestyle = :dash, label="max returns")
+        axislegend(ax, position =:rb ,unique=true)  
         save("Rewards.pdf",fig)
         fig
     end
     display(fig)
 
-
+    plot_policy_comparison(pga,solution,problem)
     #return pga, problem, avg_returns, greedy
     return avg_returns
 end
