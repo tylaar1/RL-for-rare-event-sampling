@@ -1,5 +1,6 @@
 using CairoMakie
 
+
 function plot_trajectories(pga::PolicyGradient,problem::ExcursionProblem)
     greedy = greedy_policy(pga)
     n_samples = 30

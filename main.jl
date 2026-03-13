@@ -1,7 +1,7 @@
 using CairoMakie
 using ProgressBars
 using Random
-include("plotters.jl")
+#include("plotters.jl") #TODO fix load order to avoid undef var error 
 
 # Training struct
 struct ExcursionProblem
@@ -277,8 +277,8 @@ function calculate_policy!(problem::ExcursionProblem,solution::ExactSolution,s)
     p_up   = sigmoid(theta)
     p_down = 1.0 - p_up
 
-    up_entropy   = p_up   * log(p_up   / 0.5) 
-    down_entropy = p_down * log(p_down / 0.5) 
+    up_entropy   =  log(p_up   / 0.5) 
+    down_entropy =  log(p_down / 0.5) 
     if t == problem.trajectory_length - 1
         V = (p_up*(reward(problem,s_prime_up)-up_entropy)) + ((p_down)*(reward(problem,s_prime_down)-down_entropy))
     else    
@@ -350,7 +350,6 @@ function main()
     for s in reverse(collect(state_space(problem)))
         calculate_policy!(problem,solution,s)
     end
-
     epochs = 10000
     batch_size = 64
     LOG_INTERVAL = 100
@@ -358,10 +357,10 @@ function main()
 
 
     #***Comment/Uncomment plotting functions based on need***
-    plot_trajectories(pga,problem)
-    plot_returns(solution,epochs,avg_returns)
-    plot_policy_comparison(pga,solution,problem)
-    plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
+    #plot_trajectories(pga,problem)
+    #plot_returns(solution,epochs,avg_returns)
+    #plot_policy_comparison(pga,solution,problem)
+    #plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
     
     #return pga, problem, avg_returns, greedy
     #return avg_returns
