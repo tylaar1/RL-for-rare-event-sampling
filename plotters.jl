@@ -30,7 +30,7 @@ function plot_returns(solution::ExactSolution,epochs,avg_returns)
     expected_returns_plotter = solution.values[(0,0)].*ones(epochs)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards")
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards",yscale = Makie.pseudolog10,xscale = log10)
         x_ax = 1:epochs
 
         lines!(ax, collect(x_ax), avg_returns, color=:red, linewidth=2.5, label="avg returns")
@@ -80,13 +80,8 @@ end
 function plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        #check which plotter to use
-        if minimum(D_kl) > 0
-            ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10)
-        else
-            ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Rare Event Trajectories",yscale = Makie.pseudolog10)
-        end
-        plot_epochs = 1:epochs/LOG_INTERVAL #hardcoding bad should fix :)
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
+        plot_epochs = 1:epochs/LOG_INTERVAL 
 
         lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Kl Divergence")
 

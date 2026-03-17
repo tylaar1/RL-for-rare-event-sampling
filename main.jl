@@ -358,9 +358,9 @@ function main()
 
     #***Comment/Uncomment plotting functions based on need***
     #plot_trajectories(pga,problem)
-    #plot_returns(solution,epochs,avg_returns)
+    plot_returns(solution,epochs,avg_returns)
     #plot_policy_comparison(pga,solution,problem)
-    #plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
+    plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
     
     #return pga, problem, avg_returns, greedy
     #return avg_returns
