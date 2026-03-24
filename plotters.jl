@@ -26,15 +26,16 @@ function plot_trajectories(pga::PolicyGradient,problem::ExcursionProblem)
     display(fig)
 end
 
-function plot_returns(solution::ExactSolution,epochs,avg_returns)
+function plot_returns(solution::ExactSolution,epochs,tab_returns,nn_returns)
     expected_returns_plotter = solution.values[(0,0)].*ones(epochs)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
         ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards",yscale = Makie.pseudolog10,xscale = log10)
         x_ax = 1:epochs
 
-        lines!(ax, collect(x_ax), avg_returns, color=:red, linewidth=2.5, label="avg returns")
-        lines!(ax,collect(x_ax), expected_returns_plotter, linestyle = :dash, label="max returns")
+        lines!(ax, collect(x_ax), tab_returns, color=:red, linewidth=2.5, label="tabular returns")
+                lines!(ax, collect(x_ax), nn_returns, color=:green, linewidth=2.5, label="neuralnet returns")
+        lines!(ax,collect(x_ax), expected_returns_plotter, linestyle = :dash, label="theoretical max returns")
         axislegend(ax, position =:rb ,unique=true)  
         save("Rewards.pdf",fig)
         fig
