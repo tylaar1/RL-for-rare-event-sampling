@@ -45,19 +45,20 @@ function main()
     init_pga(pga, problem)
 
     #set up training hyperparams
-    epochs = 10000
+    epochs = 1000
     batch_size = 64
     LOG_INTERVAL = 100
-    α = 0.1
+    α = 0.05
 
     #learn tabular policy
     tab_returns, D_kl = train!(pga, problem,solution, epochs, α, batch_size,LOG_INTERVAL)
     #learn NN policy
-    nn_returns = train(problem,batch_size,epochs)
-
+    pg_returns = trainPG(problem,epochs,batch_size)
+    ac_returns = trainAC(problem,epochs,batch_size)
+    """idea get Dkl for all methods to see how they coverge when plotted on same graph"""
     #***Comment/Uncomment plotting functions based on need***
     #plot_trajectories(pga,problem)
-    plot_returns(solution,epochs,tab_returns,nn_returns)
+    plot_returns(solution,epochs,tab_returns,pg_returns,ac_returns)
     #plot_policy_comparison(pga,solution,problem)
     #plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
 end

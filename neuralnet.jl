@@ -1,4 +1,4 @@
-function train(problem::ExcursionProblem,batch_size::Int,epochs::Int);
+function trainPG(problem::ExcursionProblem,epochs::Int,batch_size::Int);
     rng = Random.default_rng()
     Random.seed!(rng, 0)
 
@@ -11,13 +11,13 @@ function train(problem::ExcursionProblem,batch_size::Int,epochs::Int);
     ps, st = Lux.setup(rng, model) |> dev
 
     ## First construct a TrainState
-    train_state = Training.TrainState(model, ps, st, Adam(0.001f0))
+    train_state = Training.TrainState(model, ps, st, Adam(0.005f0))
 
     average_returns =[]
     s0 = starting_state(problem)
     traj = Trajectory() 
     T = problem.trajectory_length
-    for _ in 1:epochs
+    for _ in ProgressBar(1:epochs)
         states_list  = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
         returns_list = Matrix{Float32}[]
@@ -87,5 +87,94 @@ function sample_action(model,state,ps,st)
     action = rand() < p_up ? 2 : 1
     return action, p_up    
 end
+    
+function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
+    rng = Random.default_rng()
+    Random.seed!(rng, 0)
+    dev = cpu_device()
+
+    # Actor 
+    actor_model = Chain(Dense(2, 64, tanh), Dense(64, 64, tanh),
+                  Dense(64, 32, tanh), Dense(32, 1, sigmoid))
+    ps_actor, st_actor = Lux.setup(rng, actor_model) |> dev
+    ts_actor = Training.TrainState(actor_model, ps_actor, st_actor, Adam(0.005f0))
+
+    # Critic 
+    critic_model = Chain(Dense(2, 64, tanh), Dense(64, 64, tanh),
+                   Dense(64, 32, tanh), Dense(32, 1))  #output logit
+    ps_critic, st_critic = Lux.setup(rng, critic_model) |> dev
+    ts_critic = Training.TrainState(critic_model, ps_critic, st_critic, Adam(0.005f0))
+
+    average_returns = Float64[]
+    s0 = starting_state(problem)
+    traj = Trajectory()
+    T = problem.trajectory_length
+
+    for _ in ProgressBar(1:epochs)
+        states_list = Matrix{Float32}[]
+        actions_list = Matrix{Float32}[]
+        next_states_list = Matrix{Float32}[]
+        rewards_list = Matrix{Float32}[]
+
+        tot_returns = 0.0
+        for _ in 1:batch_size
+            sample_trajectory!(traj, problem, s0, actor_model, ps_actor, st_actor)
+            pass = transitions(traj, problem.γ)
+            tot_returns += pass[1][5]
+
+            push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (2, T)
+            push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
+            push!(next_states_list, Float32.(hcat([collect(p[3]) for p in pass]...)))  # (2, T)
+            push!(rewards_list, Float32.(reshape([p[4] for p in pass], 1, T)))     # (1, T)
+        end
+
+        states = hcat(states_list...)      |> dev  # (2, T*batch)
+        actions = hcat(actions_list...)     |> dev  # (1, T*batch)
+        next_states = hcat(next_states_list...) |> dev  # (2, T*batch)
+        rewards = hcat(rewards_list...)     |> dev  # (1, T*batch)
+
+        # Critic step,
+        gs, _, _, ts_critic = Training.single_train_step!(
+            AutoEnzyme(),
+            CriticLoss,
+            (states, next_states, rewards),
+            ts_critic
+        )
+
+        #Compute advantages
+        ps_critic = ts_critic.parameters
+        st_critic = ts_critic.states
+        v_s,  _ = Lux.apply(critic_model, states, ps_critic, st_critic)  # (1, T*batch)
+        v_s′, _ = Lux.apply(critic_model, next_states, ps_critic, st_critic)  # (1, T*batch)
+        advantages = rewards .+ problem.γ .* v_s′ .- v_s               # (1, T*batch)
+
+        # Actor step
+        gs, _, _, ts_actor = Training.single_train_step!(
+            AutoEnzyme(),
+            ActorLoss,
+            (states, actions, advantages),
+            ts_actor
+        )
+
+        push!(average_returns, tot_returns / batch_size)
+    end
+    return average_returns
+end
 
 
+function CriticLoss(model, ps, st, (states, next_states, rewards))
+    v_s,  st = Lux.apply(model, states,ps, st)
+    v_s′, _  = Lux.apply(model, next_states, ps, st)
+    loss = mean((rewards .+ 1f0 .* v_s′ .- v_s) .^ 2)  # replace 1f0 with γ
+    return loss, st, (;)
+end
+
+function ActorLoss(model, ps, st, (states, actions, advantages))
+    action_probs, st = Lux.apply(model, states, ps, st)
+    one_log_probs  = log.(clamp.(action_probs, 1f-7, 1f0))
+    zero_log_probs = log.(clamp.(1f0 .- action_probs, 1f-7, 1f0))
+    a_binary = actions .- 1f0
+    selected_log_probs = a_binary .* one_log_probs .+ (1f0 .- a_binary) .* zero_log_probs
+    loss = -mean(selected_log_probs .* advantages)
+    return loss, st, (;)
+end
