@@ -92,9 +92,6 @@ function plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
 
         lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Kl Divergence")
 
-        # greedy_xs = greedy_trajectory_xs(greedy, problem)
-        # lines!(ax, collect(ts), greedy_xs, color=:red, linewidth=2.5, label="Greedy")
-
         axislegend(ax, unique=true)
         save("log_D_kl.pdf",fig)
         fig
