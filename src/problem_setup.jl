@@ -4,7 +4,7 @@ function reward(problem::ExcursionProblem, s′)
 end
 function next_state(::ExcursionProblem, s, a)
     x, t = s
-    (x + 2a - 3, t+1)
+    (Int64(x + 2a - 3), t+1) #for some reason is converted to float 32 in NN
 end
 function is_terminal(problem::ExcursionProblem, s)
     _, t = s
@@ -34,7 +34,7 @@ function n_transitions(traj::Trajectory)
     return length(traj.actions)
 end
 
-function append_transition(traj::Trajectory, next_state::Tuple{Int64,Int64}, action::Int64, reward::Float64)
+function append_transition(traj::Trajectory, next_state::Tuple{Int64,Int64}, action::Number, reward::Float64)
     push!(traj.states, next_state)
     push!(traj.actions, action)
     push!(traj.rewards, reward)
@@ -52,8 +52,8 @@ function transitions(traj::Trajectory, discount::Float64)
 end
 
 function def_problem(T::Int64,bias::Float64,negative_penalty::Float64)
-    R = Random.randn(Float64, 2T+1, T)
-    #R = zeros( 2T+1, T)
+    #R = Random.randn(Float64, 2T+1, T)
+    R = zeros( 2T+1, T) #now that we have arbitrary T we want to avoid learning noise
     R[1:T, :] .+= negative_penalty
     R[:, T] .= (-T:T) .^ 2 .* (-bias)
     return R

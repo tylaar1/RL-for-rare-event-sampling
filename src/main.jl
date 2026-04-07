@@ -7,11 +7,11 @@ using Reactant
 using Enzyme
 using Statistics
 
-include("types.jl")
-include("problem_setup.jl")
-include("tabular.jl")
-include("neuralnet.jl")
-include("plotters.jl")
+include("src/types.jl")
+include("src/problem_setup.jl")
+include("src/tabular.jl")
+include("src/neuralnet.jl")
+include("src/plotters.jl")
 
 
 function main()
@@ -47,18 +47,18 @@ function main()
     #set up training hyperparams
     epochs = 1000
     batch_size = 64
-    LOG_INTERVAL = 100
+    LOG_INTERVAL = 10
     α = 0.05
 
     #learn tabular policy
-    tab_returns, D_kl = train!(pga, problem,solution, epochs, α, batch_size,LOG_INTERVAL)
+    tab_returns, D_kl_tab = train!(pga, problem,solution, epochs, α, batch_size,LOG_INTERVAL)
     #learn NN policy
-    pg_returns = trainPG(problem,epochs,batch_size)
-    ac_returns = trainAC(problem,epochs,batch_size)
-    """idea get Dkl for all methods to see how they coverge when plotted on same graph"""
+    pg_returns,D_kl_PG = trainPG(problem,solution,epochs,batch_size,LOG_INTERVAL)
+    ac_returns,D_kl_AC = trainAC(problem,solution,epochs,batch_size,LOG_INTERVAL)
+    
     #***Comment/Uncomment plotting functions based on need***
     #plot_trajectories(pga,problem)
     plot_returns(solution,epochs,tab_returns,pg_returns,ac_returns)
     #plot_policy_comparison(pga,solution,problem)
-    #plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
+    plot_kl_divergence(D_kl_tab,LOG_INTERVAL,epochs,D_kl_PG,D_kl_AC)
 end

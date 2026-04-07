@@ -1,4 +1,4 @@
-function trainPG(problem::ExcursionProblem,epochs::Int,batch_size::Int);
+function trainPG(problem::ExcursionProblem,solution::ExactSolution,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
     rng = Random.default_rng()
     Random.seed!(rng, 0)
 
@@ -17,7 +17,13 @@ function trainPG(problem::ExcursionProblem,epochs::Int,batch_size::Int);
     s0 = starting_state(problem)
     traj = Trajectory() 
     T = problem.trajectory_length
-    for _ in ProgressBar(1:epochs)
+    D_kl = Float64[]
+    for i in ProgressBar(1:epochs)
+        if i % LOG_INTERVAL == 0
+            KL_divergence = neural_kl_divergence(problem,solution,model,ps,st)
+            push!(D_kl,KL_divergence)
+            @info "Current KL Divergence: $KL_divergence"
+        end
         states_list  = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
         returns_list = Matrix{Float32}[]
@@ -45,7 +51,7 @@ function trainPG(problem::ExcursionProblem,epochs::Int,batch_size::Int);
         avg_return = tot_returns/batch_size
         push!(average_returns,avg_return)
     end
-    return  average_returns
+    return  average_returns, D_kl
 end
 
 function PGLoss(model, ps, st, (states, actions, returns)) 
@@ -87,7 +93,7 @@ function sample_action(model,state,ps,st)
     return action, p_up    
 end
     
-function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
+function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int, batch_size::Int,LOG_INTERVAL::Int64)
     rng = Random.default_rng()
     Random.seed!(rng, 0)
     dev = cpu_device()
@@ -106,13 +112,20 @@ function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
     s0 = starting_state(problem)
     traj = Trajectory()
     T = problem.trajectory_length
-
-    for _ in ProgressBar(1:epochs)
+    D_kl = Float64[]
+    for i in ProgressBar(1:epochs)
+        if i % LOG_INTERVAL == 0
+            KL_divergence = neural_kl_divergence(problem,solution,actor_model,ps_actor,st_actor)
+            push!(D_kl,KL_divergence)
+            @info "Current KL Divergence: $KL_divergence"
+        end
         states_list = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
         next_states_list = Matrix{Float32}[]
         rewards_list = Matrix{Float32}[]
 
+        #returns_list = Matrix{Float32}[] #debugging
+        
         tot_returns = 0.0
         for _ in 1:batch_size
             sample_trajectory!(traj, problem, s0, actor_model, ps_actor, st_actor)
@@ -123,12 +136,16 @@ function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
             push!(next_states_list, Float32.(hcat([collect(p[3]) for p in pass]...)))  # (2, T)
             push!(rewards_list, Float32.(reshape([p[4] for p in pass], 1, T)))     # (1, T)
+
+         #   push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, T))) #debugging
         end
 
         states = hcat(states_list...)      |> dev  # (2, T*batch)
         actions = hcat(actions_list...)     |> dev  # (1, T*batch)
         next_states = hcat(next_states_list...) |> dev  # (2, T*batch)
         rewards = hcat(rewards_list...)     |> dev  # (1, T*batch)
+
+        #returns = hcat(returns_list...) |> dev #debugginh
 
         # Critic step,
         gs, _, _, ts_critic = Training.single_train_step!(
@@ -144,7 +161,7 @@ function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
         v_s,  _ = Lux.apply(critic_model, states, ps_critic, st_critic)  # (1, T*batch)
         v_s′, _ = Lux.apply(critic_model, next_states, ps_critic, st_critic)  # (1, T*batch)
         advantages = rewards .+ problem.γ .* v_s′ .- v_s               # (1, T*batch)
-
+        #advantages = returns .- v_s #debugginh
         # Actor step
         gs, _, _, ts_actor = Training.single_train_step!(
             AutoEnzyme(),
@@ -155,7 +172,7 @@ function trainAC(problem::ExcursionProblem, epochs::Int, batch_size::Int)
 
         push!(average_returns, tot_returns / batch_size)
     end
-    return average_returns
+    return average_returns, D_kl
 end
 
 
@@ -174,4 +191,42 @@ function ActorLoss(model, ps, st, (states, actions, advantages))
     selected_log_probs = a_binary .* one_log_probs .+ (1f0 .- a_binary) .* zero_log_probs
     loss = -mean(selected_log_probs .* advantages)
     return loss, st, (;)
+end
+
+function get_all_probs(model, ps, st, probs,problem) 
+    for s in state_space(problem)
+        _, p_up = sample_action(model,s,ps,st)
+        probs[s] = p_up
+    end
+end
+
+function neural_kl_divergence(problem::ExcursionProblem,solution::ExactSolution, model, ps, st) 
+    D_kl = 0.0
+    T = problem.trajectory_length
+    total_p_theta = 0.0
+    total_p_w = 0.0
+    probs = Dict{Tuple{Int64,Int64},Float64}()
+    get_all_probs(model,ps,st,probs,problem)
+    for i in 0:2^T-1
+        actions = i
+        s = starting_state(problem)
+        p_theta_w = 1.0
+        p_exact_w = 1.0 
+        for _ in 1:T 
+            a = actions%2
+            a += 1 #action space is 1/2 not 0/1
+            actions = actions >> 1
+            s_prime = next_state(problem,s,a)
+            p_up_theta = probs[s]
+            p_up_exact = tab_sigmoid(solution.policy[s]) 
+
+            p_theta_w *= a == 2 ? p_up_theta : 1.0 - p_up_theta
+            p_exact_w *= a == 2 ? p_up_exact : 1.0 - p_up_exact
+            s = s_prime
+        end
+        total_p_theta += p_theta_w
+        total_p_w += p_exact_w
+        D_kl += p_theta_w * log(p_theta_w/p_exact_w)
+    end
+    return D_kl
 end

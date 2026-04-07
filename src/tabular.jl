@@ -206,7 +206,7 @@ end
 
 
 
-function kl_divergence(problem::ExcursionProblem,pga::PolicyGradient,solution::ExactSolution) #can adapt to also apply to neural net?
+function kl_divergence(problem::ExcursionProblem,pga::PolicyGradient,solution::ExactSolution)
     #TODO add guard against NaNs
     D_kl = 0.0
     T = problem.trajectory_length

@@ -84,14 +84,15 @@ function plot_policy_comparison(pga::PolicyGradient, solution::ExactSolution, pr
     return fig
 end
 
-function plot_kl_divergence(D_kl,LOG_INTERVAL,epochs)
+function plot_kl_divergence(D_kl,LOG_INTERVAL,epochs,pg,ac)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
         ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
         plot_epochs = 1:epochs/LOG_INTERVAL 
 
-        lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Kl Divergence")
-
+        lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Tabular KL Divergence")
+        lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg, color=:green, linewidth=2.5,label = "Policy Gradient KL Divergence")
+        lines!(ax, LOG_INTERVAL*collect(plot_epochs), ac, color=:purple, linewidth=2.5,label = "Actor Critic KL Divergence")
         axislegend(ax, unique=true)
         save("log_D_kl.pdf",fig)
         fig
