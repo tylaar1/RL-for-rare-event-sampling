@@ -182,25 +182,29 @@ end
 
 
 """Exact Solution"""
-function calculate_policy!(problem::ExcursionProblem,solution::ExactSolution,s)
-    x,t,T = s
-    s_prime_up = x+1,t+1,T
-    s_prime_down = x-1,t+1,T
-    if t == problem.trajectory_length - 1
-        theta = reward(problem,s_prime_up)-reward(problem,s_prime_down) #no value function for final state, ln terms cancel
-    else    
-        theta = (reward(problem,s_prime_up)+(problem.γ*solution.values[s_prime_up]))-(reward(problem,s_prime_down)+(problem.γ*solution.values[s_prime_down])) #no value function for final state, ln terms cancel
-    end
-    p_up   = tab_sigmoid(theta)
-    p_down = 1.0 - p_up
 
-    up_entropy   =  log(p_up   / 0.5) 
-    down_entropy =  log(p_down / 0.5) 
-    if t == problem.trajectory_length - 1
-        V = ((p_up)*(reward(problem,s_prime_up)-up_entropy)) + ((p_down)*(reward(problem,s_prime_down)-down_entropy))
-    else    
-        V = ((p_up)*(reward(problem,s_prime_up)-up_entropy+(problem.γ*solution.values[s_prime_up]))) + ((p_down)*(reward(problem,s_prime_down)-down_entropy+(problem.γ*solution.values[s_prime_down])))
-    end
+
+function calculate_policy!(problem::ExcursionProblem, solution::ExactSolution, s)
+    x, t, T = s
+    s_prime_up   = (x+1, t+1, T)
+    s_prime_down = (x-1, t+1, T)
+
+    final_step = t == T - 1
+                                                        #optional term included for non final steps
+    Q_up   = reward(problem, s_prime_up)   + (final_step ? 0.0 : problem.γ * solution.values[s_prime_up])
+    Q_down = reward(problem, s_prime_down) + (final_step ? 0.0 : problem.γ * solution.values[s_prime_down])
+
+    theta = Q_up - Q_down  
+
+    p_up   = logistic(theta)
+    p_down = 1.0 - p_up  # or logistic(-theta) if theta is very large
+
+    entropy_up   = -log1pexp(-theta) + log(2)
+    entropy_down = -log1pexp( theta) + log(2)
+
+    V = p_up   * (Q_up   - entropy_up)   +
+        p_down * (Q_down - entropy_down)
+
     solution.values[s] = V
     solution.policy[s] = theta
 end
@@ -208,31 +212,34 @@ end
 
 
 function kl_divergence(problem::ExcursionProblem,pga::PolicyGradient,solution::ExactSolution)
-    #TODO add guard against NaNs
     D_kl = 0.0
     T = problem.trajectory_length
-    total_p_theta = 0.0
-    total_p_w = 0.0
     for i in 0:2^T-1
         actions = i
         s = starting_state(problem)
-        p_theta_w = 1.0
-        p_exact_w = 1.0 
-        for _ in 1:T 
-            a = actions%2
-            a += 1 #action space is 1/2 not 0/1
-            actions = actions >> 1
-            s_prime = next_state(problem,s,a)
-            p_up_theta = tab_sigmoid(pga._policy_parameters[s])
-            p_up_exact = tab_sigmoid(solution.policy[s]) 
+        log_p_theta = 0.0
+        log_p_exact = 0.0
+        for _ in 1:T
+            a = actions % 2 + 1  # action space is 1/2 not 0/1
+            actions >>= 1
+            s_prime = next_state(problem, s, a)
 
-            p_theta_w *= a == 2 ? p_up_theta : 1.0 - p_up_theta
-            p_exact_w *= a == 2 ? p_up_exact : 1.0 - p_up_exact
+            theta_s = pga._policy_parameters[s]
+            exact_s = solution.policy[s]
+
+            if a == 2 #swapped for equivelant functions in log terms for numerical stability
+                log_p_theta += -log1pexp(-theta_s)   # log(sigmoid(θ))
+                log_p_exact  += -log1pexp(-exact_s)
+            else
+                log_p_theta += -log1pexp( theta_s)   # log(1 - sigmoid(θ)) = log(sigmoid(-θ))
+                log_p_exact  += -log1pexp( exact_s)
+            end
             s = s_prime
         end
-        total_p_theta += p_theta_w
-        total_p_w += p_exact_w
-        D_kl += p_theta_w * log(p_theta_w/p_exact_w)
+        # guard: if log_p_theta = -Inf, contribution is 0
+        if isfinite(log_p_theta)
+            D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
+        end
     end
     return D_kl
 end

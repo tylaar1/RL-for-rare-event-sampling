@@ -34,8 +34,8 @@ function trainPG(problem::ExcursionProblem,solution::ExactSolution,epochs::Int,b
             sample_trajectory!(traj, problem, s0, model, ps, st)
             pass = transitions(traj, problem.γ)
             tot_returns +=  pass[1][5] #gets return at original state
-            push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (2, T)
-            #push!(states_list, Float32.(hcat([vcat(collect(p[1]), p[6]) for p in pass]...)))  # (3, T)
+            push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
+            #push!(states_list, Float32.(hcat([normalise_state(p[1]) for p in pass]...)))
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
             push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, T)))     # (1, T)
         end
@@ -52,7 +52,7 @@ function trainPG(problem::ExcursionProblem,solution::ExactSolution,epochs::Int,b
         )
         avg_return = tot_returns/batch_size
         push!(average_returns,avg_return)
-        next!(p; showvalues = generate_showvalues(i,KL_divergence ))
+        next!(p; showvalues = generate_showvalues(i,KL_divergence))
     end
     return  average_returns, D_kl
 end
@@ -94,6 +94,11 @@ function sample_action(model,state,ps,st)
     p_up = output[1]
     action = rand() < p_up ? 2f0 : 1f0
     return action, p_up    
+end
+
+function normalize_state(s)
+    x, t, T = s
+    return [x / T, (T - t) / T, T / 100f0]  
 end
     
 function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int, batch_size::Int,LOG_INTERVAL::Int64)
@@ -138,7 +143,6 @@ function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int,
             tot_returns += pass[1][5]
 
             push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (2, T)
-            #push!(states_list, Float32.(hcat([vcat(collect(p[1]), p[6]) for p in pass]...)))  # (3, T)
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
             push!(next_states_list, Float32.(hcat([collect(p[3]) for p in pass]...)))  # (2, T)
             push!(rewards_list, Float32.(reshape([p[4] for p in pass], 1, T)))     # (1, T)
@@ -210,30 +214,34 @@ end
 function neural_kl_divergence(problem::ExcursionProblem,solution::ExactSolution, model, ps, st) 
     D_kl = 0.0
     T = problem.trajectory_length
-    total_p_theta = 0.0
-    total_p_w = 0.0
     probs = Dict{Tuple{Int64,Int64,Int64},Float64}()
     get_all_probs(model,ps,st,probs,problem)
     for i in 0:2^T-1
         actions = i
         s = starting_state(problem)
-        p_theta_w = 1.0
-        p_exact_w = 1.0 
-        for _ in 1:T 
-            a = actions%2
-            a += 1 #action space is 1/2 not 0/1
-            actions = actions >> 1
-            s_prime = next_state(problem,s,a)
-            p_up_theta = probs[s]
-            p_up_exact = tab_sigmoid(solution.policy[s]) 
+        log_p_theta = 0.0
+        log_p_exact = 0.0
+        for _ in 1:T
+            a = actions % 2 + 1  # action space is 1/2 not 0/1
+            actions >>= 1
+            s_prime = next_state(problem, s, a)
 
-            p_theta_w *= a == 2 ? p_up_theta : 1.0 - p_up_theta
-            p_exact_w *= a == 2 ? p_up_exact : 1.0 - p_up_exact
+            theta_s = log(probs[s] / (1 - probs[s])) #recover logit from sigmoid
+            exact_s = solution.policy[s]
+
+            if a == 2 #swapped for equivelant functions in log terms for numerical stability
+                log_p_theta += -log1pexp(-theta_s)   # log(sigmoid(θ))
+                log_p_exact  += -log1pexp(-exact_s)
+            else
+                log_p_theta += -log1pexp( theta_s)   # log(1 - sigmoid(θ)) = log(sigmoid(-θ))
+                log_p_exact  += -log1pexp( exact_s)
+            end
             s = s_prime
         end
-        total_p_theta += p_theta_w
-        total_p_w += p_exact_w
-        D_kl += p_theta_w * log(p_theta_w/p_exact_w)
+        # guard: if log_p_theta = -Inf, contribution is 0
+        if isfinite(log_p_theta)
+            D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
+        end
     end
     return D_kl
 end
