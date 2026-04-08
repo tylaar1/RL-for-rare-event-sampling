@@ -1,5 +1,5 @@
 using CairoMakie
-using ProgressBars
+using ProgressMeter
 using Lux
 using Random
 using Optimisers
@@ -7,11 +7,11 @@ using Reactant
 using Enzyme
 using Statistics
 
-include("src/types.jl")
-include("src/problem_setup.jl")
-include("src/tabular.jl")
-include("src/neuralnet.jl")
-include("src/plotters.jl")
+include("types.jl")
+include("problem_setup.jl")
+include("tabular.jl")
+include("neuralnet.jl")
+include("plotters.jl")
 
 
 function main()
@@ -25,8 +25,8 @@ function main()
     problem = ExcursionProblem(R, T, γ)
 
     #setup exact solution
-    values = Dict{Tuple{Int64,Int64},Float64}()  
-    policy = Dict{Tuple{Int64,Int64},Float64}() 
+    values = Dict{Tuple{Int64,Int64,Int64},Float64}()  
+    policy = Dict{Tuple{Int64,Int64,Int64},Float64}() 
     solution = ExactSolution(values,policy)
 
     #calculate exact solution
@@ -39,8 +39,8 @@ function main()
     end
 
     #Set up tabular policy gradient
-    params = Dict{Tuple{Int64,Int64},Float64}()  
-    gradients = Dict{Tuple{Int64,Int64},Float64}()
+    params = Dict{Tuple{Int64,Int64,Int64},Float64}()  
+    gradients = Dict{Tuple{Int64,Int64,Int64},Float64}()
     pga = PolicyGradient(γ, params, gradients)
     init_pga(pga, problem)
 
@@ -58,7 +58,7 @@ function main()
     
     #***Comment/Uncomment plotting functions based on need***
     #plot_trajectories(pga,problem)
-    plot_returns(solution,epochs,tab_returns,pg_returns,ac_returns)
+    plot_returns(solution,epochs,T,tab_returns,pg_returns,ac_returns)
     #plot_policy_comparison(pga,solution,problem)
     plot_kl_divergence(D_kl_tab,LOG_INTERVAL,epochs,D_kl_PG,D_kl_AC)
 end

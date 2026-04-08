@@ -1,5 +1,5 @@
 """setup iterator"""
-Base.eltype(::Type{ExcursionStateSpace}) = Tuple{Int,Int}
+Base.eltype(::Type{ExcursionStateSpace}) = Tuple{Int,Int,Int}
 
 Base.IteratorEltype(::Type{ExcursionStateSpace}) = Base.HasEltype()
 
@@ -15,16 +15,17 @@ state_space(problem::ExcursionProblem) = ExcursionStateSpace(problem)
 
 function Base.iterate(iter::ExcursionStateSpace)
     problem = iter.problem
+    T = problem.trajectory_length
     if problem.trajectory_length == 0
         return nothing
     end
-    s = (0, 0)
+    s = (0, 0,T)
     return s, s
 end
 
 function Base.iterate(iter::ExcursionStateSpace, state)
     problem = iter.problem
-    x, t = state
+    x, t, T = state
     T = problem.trajectory_length
 
     if T == 0
@@ -33,7 +34,7 @@ function Base.iterate(iter::ExcursionStateSpace, state)
 
     if t == 0
         if T > 1
-            next_state = (-1, 1)
+            next_state = (-1, 1, T)
             return next_state, next_state
         else
             return nothing
@@ -41,14 +42,14 @@ function Base.iterate(iter::ExcursionStateSpace, state)
     end
 
     if x < t
-        next_state = (x + 2, t)
+        next_state = (x + 2, t, T)
         return next_state, next_state
     else
         if t >= T - 1
             return nothing
         else
             t_next = t + 1
-            next_state = (-t_next, t_next)
+            next_state = (-t_next, t_next, T)
             return next_state, next_state
         end
     end
@@ -71,7 +72,7 @@ function init_pga(pga::PolicyGradient, problem::ExcursionProblem)
 end
 
 function greedy_policy(pga::PolicyGradient)
-    policy = Dict{Tuple{Int64,Int64},Int64}()
+    policy = Dict{Tuple{Int64,Int64,Int64},Int64}()
     for (state,value) in pga._policy_parameters 
         if tab_sigmoid(value) > 0.5
             policy[state] = 2
@@ -94,7 +95,7 @@ function _reset_gradients(pga::PolicyGradient)
     end
 end
 
-function sample_trajectory!(pga::PolicyGradient, traj::Trajectory, problem::ExcursionProblem, s0::Tuple{Int64,Int64}) #tabular version
+function sample_trajectory!(pga::PolicyGradient, traj::Trajectory, problem::ExcursionProblem, s0::Tuple{Int64,Int64,Int64}) #tabular version
     empty!(traj.states)
     empty!(traj.actions)
     empty!(traj.rewards)
@@ -182,9 +183,9 @@ end
 
 """Exact Solution"""
 function calculate_policy!(problem::ExcursionProblem,solution::ExactSolution,s)
-    x,t = s
-    s_prime_up = x+1,t+1
-    s_prime_down = x-1,t+1
+    x,t,T = s
+    s_prime_up = x+1,t+1,T
+    s_prime_down = x-1,t+1,T
     if t == problem.trajectory_length - 1
         theta = reward(problem,s_prime_up)-reward(problem,s_prime_down) #no value function for final state, ln terms cancel
     else    
