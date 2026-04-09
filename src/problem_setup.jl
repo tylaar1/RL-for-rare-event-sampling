@@ -3,7 +3,7 @@ function reward(problem::ExcursionProblem, s′)
     problem.rewards[x′ + T + 1, t′,T]
 end
 function next_state(::ExcursionProblem, s, a)
-    x, t , T= s
+    x, t ,T = s
     (Int64(x + 2a - 3), t+1,T) #for some reason is converted to float 32 in NN
 end
 function is_terminal(problem::ExcursionProblem, s)
@@ -57,5 +57,17 @@ function def_problem(T::Int64,bias::Float64,negative_penalty::Float64)
     R = zeros( 2T+1, T,T) #now that we have arbitrary T we want to avoid learning noise
     R[1:T, :,T] .+= negative_penalty
     R[:, T,T] .= (-T:T) .^ 2 .* (-bias)
+    return R
+end
+
+function def_3D_problem(T_min::Int64,T_max::Int64,bias::Float64,negative_penalty::Float64)
+    R = zeros( 2*T_max+1, T_max, T_max)
+    println("B")
+    for T in T_min:T_max
+        if T%2 == 0
+            R[1:T, :,T] .+= negative_penalty
+            R[1:2T+1, T,T] .= (-T:T) .^ 2 .* (-bias) 
+        end
+    end
     return R
 end

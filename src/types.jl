@@ -24,3 +24,9 @@ struct ExactSolution
     values::Dict{Tuple{Int64,Int64,Int64},Float64}
     policy::Dict{Tuple{Int64,Int64,Int64},Float64}
 end
+
+struct ExcursionProblem3D
+    rewards::Array{Float64,3}
+    trajectory_lengths::Array{Int64}
+    γ::Float64
+end

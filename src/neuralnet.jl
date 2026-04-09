@@ -1,4 +1,4 @@
-function trainPG(problem::ExcursionProblem,solution::ExactSolution,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
+function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,solution::ExactSolution,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
     rng = Random.default_rng()
     Random.seed!(rng, 0)
 
@@ -31,13 +31,20 @@ function trainPG(problem::ExcursionProblem,solution::ExactSolution,epochs::Int,b
         returns_list = Matrix{Float32}[]
         tot_returns = 0.0
         for _ in 1:batch_size #batch size is N trajectories not N datapoints
-            sample_trajectory!(traj, problem, s0, model, ps, st)
+            Temp_T = rand(problem_3D.trajectory_lengths)
+            Temp_R = problem_3D.rewards[1:2*Temp_T+1,1:Temp_T,1:Temp_T]
+            Temp_problem = ExcursionProblem(Temp_R,Temp_T,problem.γ)
+            s0 = starting_state(Temp_problem)
+            sample_trajectory!(traj, Temp_problem, s0, model, ps, st)
+            println("reached")
+            #sample_trajectory!(traj, problem, s0, model, ps, st)
             pass = transitions(traj, problem.γ)
             tot_returns +=  pass[1][5] #gets return at original state
             push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
-            #push!(states_list, Float32.(hcat([normalise_state(p[1]) for p in pass]...)))
-            push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
-            push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, T)))     # (1, T)
+            #push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
+            #push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, T)))     # (1, T)
+            push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, Temp_T)))     # (1, T)
+            push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, Temp_T)))     # (1, T)
         end
         # hcat batch  results together
         states  = hcat(states_list...)  |> dev
@@ -68,7 +75,7 @@ function PGLoss(model, ps, st, (states, actions, returns))
 end
 
 
-function sample_trajectory!(traj::Trajectory, problem::ExcursionProblem, s0::Tuple{Int64,Int64,Int64},model, ps, st)
+function sample_trajectory!(traj::Trajectory, a_problem::ExcursionProblem, s0::Tuple{Int64,Int64,Int64},model, ps, st)
     empty!(traj.states)
     empty!(traj.actions)
     empty!(traj.rewards)
@@ -76,14 +83,36 @@ function sample_trajectory!(traj::Trajectory, problem::ExcursionProblem, s0::Tup
 
     while true
         current_state = traj.states[end]
-        if is_terminal(problem, current_state)
+        if is_terminal(a_problem, current_state)
+            break
+        end
+
+
+        action, p_up = sample_action(model,current_state,ps,st)
+        ns = next_state(a_problem, current_state, action)
+        p_action = action == 2 ? p_up : 1-p_up
+        # 0.5 is the uniform probability
+        r = reward(a_problem, ns) - log(p_action/0.5)
+        append_transition(traj, ns, action, r)
+    end
+end
+
+function sample_trajectory!(traj::Trajectory, a_problem::ExcursionProblem3D, s0::Tuple{Int64,Int64,Int64},model, ps, st)
+    empty!(traj.states)
+    empty!(traj.actions)
+    empty!(traj.rewards)
+    push!(traj.states, s0)
+    _,_,T = s0 #get specific T for this problem
+    while true
+        current_state = traj.states[end]
+        if is_terminal(a_problem, current_state)
             break
         end
         action, p_up = sample_action(model,current_state,ps,st)
-        ns = next_state(problem, current_state, action)
+        ns = next_state(a_problem, current_state, action)
         p_action = action == 2 ? p_up : 1-p_up
         # 0.5 is the uniform probability
-        r = reward(problem, ns) - log(p_action/0.5)
+        r = reward(a_problem, ns) - log(p_action/0.5)
         append_transition(traj, ns, action, r)
     end
 end
