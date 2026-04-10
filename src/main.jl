@@ -6,6 +6,10 @@ using Optimisers
 using Enzyme
 using Statistics
 using LogExpFunctions
+using CSV
+using Tables
+using Base.Threads
+using JLD2
 
 include("types.jl")
 include("problem_setup.jl")
@@ -17,7 +21,7 @@ include("plotters.jl")
 function main()
     #setup env
     Random.seed!(1234)
-    T = 14 #arbitrary value within T min and T max to calculate kl against.. to be improved on later
+    T = 20 #arbitrary value within T min and T max to calculate kl against.. to be improved on later
     T_min = 10
     T_max = 20
     T_array = [T for T in T_min:T_max if T % 2 == 0]
@@ -51,15 +55,15 @@ function main()
     init_pga(pga, problem)
 
     #set up training hyperparams
-    epochs = 100
+    epochs = 1000
     batch_size = 64
-    LOG_INTERVAL = 10
+    LOG_INTERVAL = 20
     α = 0.05
 
     #learn tabular policy
     tab_returns, D_kl_tab = train!(pga, problem,solution, epochs, α, batch_size,LOG_INTERVAL)
     #learn NN policy
-    pg_returns,D_kl_PG = trainPG(problem,problem_3D,solution,epochs,batch_size,LOG_INTERVAL)
+    pg_returns,D_kl_PG = trainPG(problem,problem_3D,epochs,batch_size,LOG_INTERVAL)
     #ac_returns,D_kl_AC = trainAC(problem,solution,epochs,batch_size,LOG_INTERVAL)
     
     #***Comment/Uncomment plotting functions based on need***
@@ -69,4 +73,35 @@ function main()
     plot_returns(solution,epochs,T,tab_returns,pg_returns,ac_returns)
     #plot_policy_comparison(pga,solution,problem)
     plot_kl_divergence(LOG_INTERVAL,epochs,D_kl_tab,D_kl_PG,D_kl_AC)
+    CSV.write("data/data3.csv", Tables.table(D_kl_PG))
 end
+
+function get_exact_sols()
+    #setup env
+    Random.seed!(1234)
+    T = 20 #arbitrary value within T min and T max to calculate kl against.. to be improved on later
+    T_min = 10
+    T_max = 20
+    T_array = [T for T in T_min:T_max if T % 2 == 0]
+    bias = 5.0 #should be a positive val
+    negative_penalty = -10.0 #should be a negative val
+    γ = 1.0
+    #setup exact solution
+    for T in T_array
+        R = def_problem(T, bias, negative_penalty)
+        problem = ExcursionProblem(R, T, γ)
+        values = Dict{Tuple{Int64,Int64,Int64}, Float64}()
+        policy = Dict{Tuple{Int64,Int64,Int64}, Float64}()
+        solution = ExactSolution(values, policy)
+        for s in state_space(problem)
+            solution.values[s] = 0.0
+            solution.policy[s] = 0.0
+        end
+        for s in reverse(collect(state_space(problem)))
+            calculate_policy!(problem, solution, s)
+        end
+    solutions[T] = solution
+    end
+    @save "data/solutions10-20.jld2" solutions
+end
+    

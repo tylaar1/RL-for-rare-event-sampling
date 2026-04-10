@@ -57,6 +57,61 @@ end
 
 """Iterator done"""
 
+
+Base.eltype(::Type{ExcursionStateSpace3D}) = Tuple{Int,Int,Int}
+
+Base.IteratorEltype(::Type{ExcursionStateSpace3D}) = Base.HasEltype()
+
+Base.IteratorSize(::Type{ExcursionStateSpace3D}) = Base.HasLength()
+
+function Base.length(iter::ExcursionStateSpace3D)
+    T = iter.problem.trajectory_length
+    return T*(T+1) ÷ 2
+end
+
+"""Not actually 3D just an adaption that takes `ExcursionProblem3D`, `T` as inputs."""
+state_space(problem::ExcursionProblem3D,T) = ExcursionStateSpace3D(problem,T)
+
+function Base.iterate(iter::ExcursionStateSpace3D)
+    T = iter.trajectory_length
+    if T == 0
+        return nothing
+    end
+    s = (0, 0, T)
+    return s, s
+end
+
+function Base.iterate(iter::ExcursionStateSpace3D, state)
+    x, t, T = state
+    T = iter.trajectory_length
+
+    if T == 0
+        return nothing
+    end
+
+    if t == 0
+        if T > 1
+            next_state = (-1, 1, T)
+            return next_state, next_state
+        else
+            return nothing
+        end
+    end
+
+    if x < t
+        next_state = (x + 2, t, T)
+        return next_state, next_state
+    else
+        if t >= T - 1
+            return nothing
+        else
+            t_next = t + 1
+            next_state = (-t_next, t_next, T)
+            return next_state, next_state
+        end
+    end
+end
+
 function tab_sigmoid(x::Float64) #rename to avoid conflict with sig function in Lux
     return 1/(1+exp(-x))
 end

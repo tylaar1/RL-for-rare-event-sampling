@@ -32,6 +32,7 @@ function plot_returns(solution::ExactSolution,epochs,T,tab_returns=nothing,pg_re
         fig = CairoMakie.Figure(size=(800, 500))
         ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards",yscale = Makie.pseudolog10,xscale = log10)
         x_ax = 1:epochs
+
         if tab_returns !== nothing
             lines!(ax, collect(x_ax), tab_returns, color=:red, linewidth=2.5, label="Tabular returns")
         end

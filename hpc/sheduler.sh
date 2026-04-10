@@ -9,4 +9,5 @@
 module purge
 module load julia-uoneasy
 julia --project=. -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
+#julia --project=. -e 'using Pkg; Pkg.add("JLD2")'
 julia --project=. run.jl

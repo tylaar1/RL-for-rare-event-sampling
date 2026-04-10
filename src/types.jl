@@ -30,3 +30,8 @@ struct ExcursionProblem3D
     trajectory_lengths::Array{Int64}
     γ::Float64
 end
+
+struct ExcursionStateSpace3D
+    problem::ExcursionProblem3D
+    trajectory_length::Int
+end

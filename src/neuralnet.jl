@@ -1,4 +1,4 @@
-function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,solution::ExactSolution,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
+function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
     rng = Random.default_rng()
     Random.seed!(rng, 0)
 
@@ -20,11 +20,15 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,soluti
     D_kl = Float64[]
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
+    KL_divergence_task = nothing
+    @load "data/solutions10-20.jld2" solutions
+    solution = solutions[20]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
-            KL_divergence = neural_kl_divergence(problem,solution,model,ps,st)
-            push!(D_kl,KL_divergence)
+            ps_copy = deepcopy(ps)
+            st_copy = deepcopy(st)
+            KL_divergence_task = @spawn neural_kl_divergence(problem_3D,solution,model,ps_copy,st_copy,T) 
         end
         states_list  = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
@@ -32,11 +36,11 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,soluti
         tot_returns = 0.0
         for _ in 1:batch_size #batch size is N trajectories not N datapoints
             Temp_T = rand(problem_3D.trajectory_lengths)
-            Temp_R = problem_3D.rewards[1:2*Temp_T+1,1:Temp_T,1:Temp_T]
-            Temp_problem = ExcursionProblem(Temp_R,Temp_T,problem.γ)
-            s0 = starting_state(Temp_problem)
-            sample_trajectory!(traj, Temp_problem, s0, model, ps, st)
-            println("reached")
+            #Temp_R = problem_3D.rewards[1:2*Temp_T+1,1:Temp_T,1:Temp_T]
+            #Temp_problem = ExcursionProblem(Temp_R,Temp_T,problem.γ)
+            #s0 = starting_state(Temp_problem)
+            s0 = starting_state(problem_3D,Temp_T)
+            sample_trajectory!(traj, problem_3D, s0, model, ps, st)
             #sample_trajectory!(traj, problem, s0, model, ps, st)
             pass = transitions(traj, problem.γ)
             tot_returns +=  pass[1][5] #gets return at original state
@@ -50,6 +54,10 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,soluti
         states  = hcat(states_list...)  |> dev
         actions = hcat(actions_list...) |> dev
         returns = hcat(returns_list...) |> dev
+        avg_return = tot_returns/batch_size
+        push!(average_returns,avg_return)
+        #L = length.(actions)
+        #hcat([[1/T for _ in 1:T] for T in L]...)
 
         gs, loss, stats, train_state = Training.single_train_step!(
             AutoEnzyme(), #auto diff
@@ -57,10 +65,14 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,soluti
             (states,actions,returns), #input/target pair
             train_state #model params etc
         )
-        avg_return = tot_returns/batch_size
-        push!(average_returns,avg_return)
+        if (i+1) % LOG_INTERVAL == 0 && KL_divergence_task !== nothing
+            KL_divergence = fetch(KL_divergence_task)
+            push!(D_kl,KL_divergence)
+        end
         next!(p; showvalues = generate_showvalues(i,KL_divergence))
     end
+    KL_divergence = fetch(KL_divergence_task)
+    push!(D_kl,KL_divergence)
     return  average_returns, D_kl
 end
 
@@ -70,7 +82,7 @@ function PGLoss(model, ps, st, (states, actions, returns))
     zero_log_probs = log.(clamp.(1f0 .- action_probs, 1f-7, 1f0)) #clamp for numerical stability
     a_binary = actions .- 1f0 #change from 1/2 to 0/1
     selected_log_probs = a_binary .* one_log_probs .+ (1f0 .- a_binary) .* zero_log_probs #none action term dissapears
-    loss = -mean(selected_log_probs.*returns)
+    loss = -mean(selected_log_probs.*returns)  #TODO:1/n sum 1/T 
     return loss, st, (;)
 end
 
@@ -233,8 +245,15 @@ function ActorLoss(model, ps, st, (states, actions, advantages))
     return loss, st, (;)
 end
 
-function get_all_probs(model, ps, st, probs,problem) 
+function get_all_probs(model, ps, st, probs,problem::ExcursionProblem) 
     for s in state_space(problem)
+        _, p_up = sample_action(model,s,ps,st)
+        probs[s] = p_up
+    end
+end
+
+function get_all_probs(model, ps, st, probs,problem::ExcursionProblem3D,T) 
+    for s in state_space(problem,T)
         _, p_up = sample_action(model,s,ps,st)
         probs[s] = p_up
     end
@@ -248,6 +267,40 @@ function neural_kl_divergence(problem::ExcursionProblem,solution::ExactSolution,
     for i in 0:2^T-1
         actions = i
         s = starting_state(problem)
+        log_p_theta = 0.0
+        log_p_exact = 0.0
+        for _ in 1:T
+            a = actions % 2 + 1  # action space is 1/2 not 0/1
+            actions >>= 1
+            s_prime = next_state(problem, s, a)
+
+            theta_s = log(probs[s] / (1 - probs[s])) #recover logit from sigmoid
+            exact_s = solution.policy[s]
+
+            if a == 2 #swapped for equivelant functions in log terms for numerical stability
+                log_p_theta += -log1pexp(-theta_s)   # log(sigmoid(θ))
+                log_p_exact  += -log1pexp(-exact_s)
+            else
+                log_p_theta += -log1pexp( theta_s)   # log(1 - sigmoid(θ)) = log(sigmoid(-θ))
+                log_p_exact  += -log1pexp( exact_s)
+            end
+            s = s_prime
+        end
+        # guard: if log_p_theta = -Inf, contribution is 0
+        if isfinite(log_p_theta)
+            D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
+        end
+    end
+    return D_kl
+end
+
+function neural_kl_divergence(problem::ExcursionProblem3D,solution::ExactSolution, model, ps, st,T) 
+    D_kl = 0.0
+    probs = Dict{Tuple{Int64,Int64,Int64},Float64}()
+    get_all_probs(model,ps,st,probs,problem,T)
+    for i in 0:2^T-1
+        actions = i
+        s = starting_state(problem,T)
         log_p_theta = 0.0
         log_p_exact = 0.0
         for _ in 1:T
