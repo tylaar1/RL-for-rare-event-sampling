@@ -1,6 +1,6 @@
 function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
     rng = Random.default_rng()
-    Random.seed!(rng, 0)
+    Random.seed!(rng, parse(Int,ARGS[1]))
 
     # Construct the layer
     model = Chain(Dense(3, 64, tanh), Chain(Dense(64, 64, tanh), Chain(Dense(64, 32, tanh), Dense(32, 1, sigmoid)))) #input state,output action probs
@@ -17,18 +17,21 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
     s0 = starting_state(problem)
     traj = Trajectory() 
     T = problem.trajectory_length
-    D_kl = Float64[]
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
-    KL_divergence_task = nothing
+    KL_tasks = nothing
+    n_logs = epochs / LOG_INTERVAL
+    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(problem_3D.trajectory_lengths))
+    row_idx = 1
     @load "data/solutions10-20.jld2" solutions
-    solution = solutions[20]
+    solutions_arr = [solutions[T] for T in problem_3D.trajectory_lengths]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
             ps_copy = deepcopy(ps)
             st_copy = deepcopy(st)
-            KL_divergence_task = @spawn neural_kl_divergence(problem_3D,solution,model,ps_copy,st_copy,T) 
+            KL_tasks = [@spawn neural_kl_divergence(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, problem_3D.trajectory_lengths)
+    ]
         end
         states_list  = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
@@ -65,14 +68,15 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
             (states,actions,returns), #input/target pair
             train_state #model params etc
         )
-        if (i+1) % LOG_INTERVAL == 0 && KL_divergence_task !== nothing
-            KL_divergence = fetch(KL_divergence_task)
-            push!(D_kl,KL_divergence)
+        if (i+1) % LOG_INTERVAL == 0 && KL_tasks !== nothing
+            KL_values = fetch.(KL_tasks)  
+            D_kl[row_idx, :] = KL_values
+            row_idx += 1
         end
         next!(p; showvalues = generate_showvalues(i,KL_divergence))
     end
-    KL_divergence = fetch(KL_divergence_task)
-    push!(D_kl,KL_divergence)
+    KL_values = fetch.(KL_tasks)
+    D_kl[row_idx, :] = KL_values
     return  average_returns, D_kl
 end
 

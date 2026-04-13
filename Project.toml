@@ -2,6 +2,7 @@
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 Experimenter = "6aee034a-9508-47b1-8e11-813cc29af79f"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"

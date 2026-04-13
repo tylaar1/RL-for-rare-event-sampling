@@ -90,11 +90,15 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,D_kl=nothing,pg=nothing,ac=nothi
         fig = CairoMakie.Figure(size=(800, 500))
         ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
         plot_epochs = 1:epochs/LOG_INTERVAL 
-        if D_kl !== nothing
-            lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Tabular KL Divergence")
-        end
+        #if D_kl !== nothing
+        #    lines!(ax, LOG_INTERVAL*collect(plot_epochs), D_kl, color=:red, linewidth=2.5,label = "Tabular KL Divergence")
+        #end
         if pg !== nothing
-            lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg, color=:green, linewidth=2.5,label = "Policy Gradient KL Divergence")
+            pg = Matrix(pg)
+            _,N = size(pg)
+            for i in 1:N
+                lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(8+2*i)") #8+2*i only works for numbers starting at 10 and increments of 2
+            end
         end
         if ac !== nothing
             lines!(ax, LOG_INTERVAL*collect(plot_epochs), ac, color=:purple, linewidth=2.5,label = "Actor Critic KL Divergence")
@@ -105,3 +109,39 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,D_kl=nothing,pg=nothing,ac=nothi
     end
     display(fig)
 end
+
+function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame)
+    fig = begin
+        fig = CairoMakie.Figure(size=(800, 500))
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
+        plot_epochs = 1:epochs/LOG_INTERVAL 
+        if pg !== nothing
+            pg = Matrix(pg)
+            _,N = size(pg)
+            for i in 1:N
+                lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(8+2*i)") #8+2*i only works for numbers starting at 10 and increments of 2
+            end
+        end
+        axislegend(ax, unique=true)
+        save("log_D_kl_avg.pdf",fig)
+        fig
+    end
+    display(fig)
+end
+
+function prepair_data(filepaths::Vector{String}, std_dev=true)
+    dfs = [CSV.read(f, DataFrame) for f in filepaths]
+    cols = names(dfs[1])
+
+    data = cat([Matrix(df) for df in dfs]..., dims=3)
+    
+    means = DataFrame(mean(data, dims=3)[:,:,1], cols)
+    
+    if std_dev
+        stds = DataFrame(std(data, dims=3)[:,:,1], cols)
+        return means, stds
+    else
+        return means
+    end
+end
+
