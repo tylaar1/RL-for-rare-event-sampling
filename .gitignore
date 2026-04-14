@@ -1,5 +1,6 @@
-*.pdf
+#*.pdf
 outs/
 2.sh
 gpt.sh
-data/
+#data/
+logs/

@@ -13,7 +13,7 @@ function plot_trajectories(pga::PolicyGradient,problem::ExcursionProblem)
         for i in 1:n_samples
             xs = sampled_trajectory_xs(pga, problem)
             lines!(ax, collect(ts), xs, color=(:blue, 0.20), linewidth=1,
-                label= i == 1 ? "Sampled (n=n_samples)" : nothing)
+                label = i == 1 ? "Sampled (n=n_samples)" : nothing)
         end
 
         greedy_xs = greedy_trajectory_xs(greedy, problem)
@@ -49,6 +49,26 @@ function plot_returns(solution::ExactSolution,epochs,T,tab_returns=nothing,pg_re
     end
     display(fig)    
 end
+
+function plot_returns_std(epochs,pg_returns,pg_returns_std)
+    #expected_returns_plotter = solution.values[(0,0,T)].*ones(epochs)
+    pg_returns=pg_returns.returns
+    pg_returns_std=pg_returns_std.returns
+    fig = begin
+        fig = CairoMakie.Figure(size=(800, 500))
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards",yscale = Makie.pseudolog10,xscale = log10)
+        x_ax = 1:epochs
+        upper = pg_returns .+ pg_returns_std
+        lower = pg_returns .- pg_returns_std
+        CairoMakie.band!(ax, x_ax, lower, upper)
+        lines!(ax, collect(x_ax), pg_returns, linewidth=2.5, label="PolicyGradient returns")
+        axislegend(ax, position =:rb ,unique=true)  
+        save("Rewards_std2.pdf",fig)
+        fig
+    end
+    display(fig)    
+end
+
 
 function plot_policy_comparison(pga::PolicyGradient, solution::ExactSolution, problem::ExcursionProblem)
     T = problem.trajectory_length
@@ -143,5 +163,60 @@ function prepair_data(filepaths::Vector{String}, std_dev=true)
     else
         return means
     end
+end
+
+function plot_kl_divergence_std(LOG_INTERVAL, epochs, pg=nothing, pg_std=nothing)
+
+    pg  = Matrix(pg)
+    _, N = size(pg)
+
+    # --- auto-fit grid dimensions ---
+    ncols = ceil(Int, sqrt(N))
+    nrows = ceil(Int, N / ncols)
+
+    plot_epochs = LOG_INTERVAL .* collect(1:size(pg, 1))
+
+    fig = CairoMakie.Figure(size=(400 * ncols, 350 * nrows))
+
+    for i in 1:N
+        row = ceil(Int, i / ncols)
+        col = mod1(i, ncols)
+
+        label_val = 8 + 2 * i   # 10, 12, 14, ...
+        ax = CairoMakie.Axis(
+            fig[row, col],
+            xlabel  = "Epochs",
+            ylabel  = "D_kl",
+            title   = "KL Divergence — Length $(label_val)",
+            yscale  = log10,
+            xscale  = log10,
+        )
+
+        color = Makie.wong_colors()[mod1(i, length(Makie.wong_colors()))]
+
+        # shaded std dev band
+        if pg_std !== nothing
+            pg_std_mat = Matrix(pg_std)
+            lower = max.(pg[:, i] .- pg_std_mat[:, i], 1e-12)   # clamp away from ≤0 for log scale
+            upper = pg[:, i] .+ pg_std_mat[:, i]
+            CairoMakie.band!(ax, plot_epochs, lower, upper,
+                color = (color, 0.25))
+        end
+
+        CairoMakie.lines!(ax, plot_epochs, pg[:, i],
+            color     = color,
+            linewidth = 2.5,
+            label     = "PG KL Divergence $(label_val)")
+    end
+
+    # hide any leftover empty cells in the grid
+    for i in (N+1):(nrows * ncols)
+        row = ceil(Int, i / ncols)
+        col = mod1(i, ncols)
+        CairoMakie.hidedecorations!(CairoMakie.Axis(fig[row, col]))
+    end
+
+    CairoMakie.save("log_D_kl_std.pdf", fig)
+    display(fig)
 end
 

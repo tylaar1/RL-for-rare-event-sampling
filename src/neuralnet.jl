@@ -1,6 +1,7 @@
 function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
     rng = Random.default_rng()
     Random.seed!(rng, parse(Int,ARGS[1]))
+    #Random.seed!(rng, 0)
 
     # Construct the layer
     model = Chain(Dense(3, 64, tanh), Chain(Dense(64, 64, tanh), Chain(Dense(64, 32, tanh), Dense(32, 1, sigmoid)))) #input state,output action probs
@@ -39,17 +40,12 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
         tot_returns = 0.0
         for _ in 1:batch_size #batch size is N trajectories not N datapoints
             Temp_T = rand(problem_3D.trajectory_lengths)
-            #Temp_R = problem_3D.rewards[1:2*Temp_T+1,1:Temp_T,1:Temp_T]
-            #Temp_problem = ExcursionProblem(Temp_R,Temp_T,problem.γ)
-            #s0 = starting_state(Temp_problem)
             s0 = starting_state(problem_3D,Temp_T)
             sample_trajectory!(traj, problem_3D, s0, model, ps, st)
             #sample_trajectory!(traj, problem, s0, model, ps, st)
             pass = transitions(traj, problem.γ)
             tot_returns +=  pass[1][5] #gets return at original state
             push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
-            #push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, T)))     # (1, T)
-            #push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, T)))     # (1, T)
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, Temp_T)))     # (1, T)
             push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, Temp_T)))     # (1, T)
         end
@@ -59,34 +55,35 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
         returns = hcat(returns_list...) |> dev
         avg_return = tot_returns/batch_size
         push!(average_returns,avg_return)
-        #L = length.(actions)
-        #hcat([[1/T for _ in 1:T] for T in L]...)
-
         gs, loss, stats, train_state = Training.single_train_step!(
             AutoEnzyme(), #auto diff
             PGLoss, #loss function
-            (states,actions,returns), #input/target pair
+            (states,actions,returns,batch_size), #input/target pair
             train_state #model params etc
         )
         if (i+1) % LOG_INTERVAL == 0 && KL_tasks !== nothing
             KL_values = fetch.(KL_tasks)  
+            KL_divergence = mean(KL_values)
             D_kl[row_idx, :] = KL_values
             row_idx += 1
         end
         next!(p; showvalues = generate_showvalues(i,KL_divergence))
     end
     KL_values = fetch.(KL_tasks)
+    KL_divergence = mean(KL_values)
     D_kl[row_idx, :] = KL_values
     return  average_returns, D_kl
 end
 
-function PGLoss(model, ps, st, (states, actions, returns)) 
+function PGLoss(model, ps, st, (states, actions, returns,batch_size)) 
     action_probs, st = Lux.apply(model,states,ps,st) #get p up for the state
     one_log_probs = log.(clamp.(action_probs,1f-7,1f0))
     zero_log_probs = log.(clamp.(1f0 .- action_probs, 1f-7, 1f0)) #clamp for numerical stability
     a_binary = actions .- 1f0 #change from 1/2 to 0/1
     selected_log_probs = a_binary .* one_log_probs .+ (1f0 .- a_binary) .* zero_log_probs #none action term dissapears
-    loss = -mean(selected_log_probs.*returns)  #TODO:1/n sum 1/T 
+    T_vector = Float32.(states[3, :])
+    normalised_returns = returns ./ T_vector
+    loss = -(1f0/batch_size)*(sum(selected_log_probs.*normalised_returns))  
     return loss, st, (;)
 end
 
@@ -295,7 +292,8 @@ function neural_kl_divergence(problem::ExcursionProblem,solution::ExactSolution,
             D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
         end
     end
-    return D_kl
+    Scaled_D_KL = D_kl/T
+    return Scaled_D_KL
 end
 
 function neural_kl_divergence(problem::ExcursionProblem3D,solution::ExactSolution, model, ps, st,T) 
@@ -329,5 +327,6 @@ function neural_kl_divergence(problem::ExcursionProblem3D,solution::ExactSolutio
             D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
         end
     end
-    return D_kl
+    Scaled_D_KL = D_kl/T
+    return Scaled_D_KL
 end

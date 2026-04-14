@@ -19,4 +19,3 @@ module load julia-uoneasy/1.10.4-linux-x86_64
 
 julia --project=. -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
 julia --project=. run.jl $TASK 
-echo "Finished job now"
