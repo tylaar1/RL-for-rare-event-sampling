@@ -49,8 +49,6 @@ function main()
         calculate_policy!(problem,solution,s)
     end
 
-
-
     #Set up tabular policy gradient
     params = Dict{Tuple{Int64,Int64,Int64},Float64}()  
     gradients = Dict{Tuple{Int64,Int64,Int64},Float64}()
@@ -60,7 +58,7 @@ function main()
     #set up training hyperparams
     epochs = 1000
     batch_size = 64
-    LOG_INTERVAL = 20
+    LOG_INTERVAL = 100
     α = 0.05
 
     #learn tabular policy
@@ -68,15 +66,17 @@ function main()
     #learn NN policy
     pg_returns,D_kl_PG = trainPG(problem,problem_3D,epochs,batch_size,LOG_INTERVAL)
     #ac_returns,D_kl_AC = trainAC(problem,solution,epochs,batch_size,LOG_INTERVAL)
-    CSV.write("data/returns_$id.csv", (returns = vec(pg_returns),))
+    #CSV.write("data/d_kl_$id.csv",(KL10 = D_kl_PG[:,1], KL12 = D_kl_PG[:,2],KL14 = D_kl_PG[:,3], KL16 = D_kl_PG[:,4],KL18 = D_kl_PG[:,5], KL20 = D_kl_PG[:,6]))
+    CSV.write("data/d_kl_$T_max _$id.csv", NamedTuple(Symbol("KL$(T)") => D_kl_PG[:, i] for (i, T) in enumerate(T_min:2:T_max))) #2 = step size
+    CSV.write("data/returns_$T_max _$id.csv", (returns = vec(pg_returns),))
 
     #***Comment/Uncomment plotting functions based on need***
     #plot_trajectories(pga,problem)
     ac_returns = nothing
     D_kl_AC = nothing
-    plot_returns(solution,epochs,T,tab_returns,pg_returns,ac_returns)
+    #plot_returns(solution,epochs,T,tab_returns,pg_returns,ac_returns)
     #plot_policy_comparison(pga,solution,problem)
-    plot_kl_divergence(LOG_INTERVAL,epochs,D_kl_tab,D_kl_PG,D_kl_AC)
+    #plot_kl_divergence(LOG_INTERVAL,epochs,D_kl_tab,D_kl_PG,D_kl_AC)
     #plot_kl_divergence(20,1000,nothing,D_kl_PG)
     #plot_returns(epochs,pg_returns)
 end
@@ -84,13 +84,13 @@ end
 function get_exact_sols()
     #setup env
     Random.seed!(1234)
-    T = 20 #arbitrary value within T min and T max to calculate kl against.. to be improved on later
     T_min = 10
-    T_max = 20
+    T_max = 30
     T_array = [T for T in T_min:T_max if T % 2 == 0]
     bias = 5.0 #should be a positive val
     negative_penalty = -10.0 #should be a negative val
     γ = 1.0
+    solutions = Dict{Int64,ExactSolution}()
     #setup exact solution
     for T in T_array
         R = def_problem(T, bias, negative_penalty)
@@ -107,7 +107,7 @@ function get_exact_sols()
         end
     solutions[T] = solution
     end
-    @save "data/solutions10-20.jld2" solutions
+    @save "data/solutions10-30.jld2" solutions
 end
     
 function kl_plotter()
@@ -121,11 +121,12 @@ function kl_plotter()
 end
 
 function returns_plotter()
-    paths = ["data/returns_$i.csv" for i in 1:10]
-
-    means,std = prepair_data(paths)
-    print(means)
-    print(std)
-    plot_returns_std(1000,means,std)
-
+    paths = ["data/returns_20 _$i.csv" for i in 1:10]
+    means,std = prepair_data_1D(paths)
+    @load "data/solutions10-20.jld2" solutions
+    T_min = 10 
+    T_max = 20
+    solutions_arr = [solutions[T].values[(0, 0, T)]/T for T in T_min:2:T_max]
+    expected_max_return = mean(solutions_arr) #assume every T is will appear approx exquivelant amount of times over large amount of repeats
+    plot_returns_std(1000,means,std,expected_max_return,"returns_normalised_std.pdf")
 end

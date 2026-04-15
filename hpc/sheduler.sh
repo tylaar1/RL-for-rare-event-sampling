@@ -3,7 +3,7 @@
 #SBATCH --partition=shortq
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=10G
-#SBATCH --time=0:30:00
+#SBATCH --time=10:00:00
 #SBATCH --output=outs/shortq_%j.out
 
 module purge

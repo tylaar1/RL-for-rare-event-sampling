@@ -25,6 +25,7 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
     D_kl = Matrix{Float64}(undef, Int64(n_logs), length(problem_3D.trajectory_lengths))
     row_idx = 1
     @load "data/solutions10-20.jld2" solutions
+    #@load "data/solutions10-30.jld2" solutions
     solutions_arr = [solutions[T] for T in problem_3D.trajectory_lengths]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
@@ -44,7 +45,7 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
             sample_trajectory!(traj, problem_3D, s0, model, ps, st)
             #sample_trajectory!(traj, problem, s0, model, ps, st)
             pass = transitions(traj, problem.γ)
-            tot_returns +=  pass[1][5] #gets return at original state
+            tot_returns +=  pass[1][5]/Temp_T #gets return at original state
             push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, Temp_T)))     # (1, T)
             push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, Temp_T)))     # (1, T)

@@ -4,9 +4,9 @@
 #SBATCH --array=1-10
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=10G
-#SBATCH --time=0:30:00
+#SBATCH --time=10:00:00
 
 #SBATCH -o ./logs/output-%A_%a.out # STDOUT
 

@@ -50,20 +50,23 @@ function plot_returns(solution::ExactSolution,epochs,T,tab_returns=nothing,pg_re
     display(fig)    
 end
 
-function plot_returns_std(epochs,pg_returns,pg_returns_std)
-    #expected_returns_plotter = solution.values[(0,0,T)].*ones(epochs)
-    pg_returns=pg_returns.returns
-    pg_returns_std=pg_returns_std.returns
+function plot_returns_std(epochs,pg_returns,pg_returns_std,expected_returns,saveas=nothing)
+    expected_returns_plotter = expected_returns*ones(epochs)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Rewards", title="Rewards",yscale = Makie.pseudolog10,xscale = log10)
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="Returns/T", title="Returns/T",yscale = Makie.pseudolog10,xscale = log10)
         x_ax = 1:epochs
         upper = pg_returns .+ pg_returns_std
         lower = pg_returns .- pg_returns_std
-        CairoMakie.band!(ax, x_ax, lower, upper)
+        band!(ax, x_ax, lower, upper)
         lines!(ax, collect(x_ax), pg_returns, linewidth=2.5, label="PolicyGradient returns")
-        axislegend(ax, position =:rb ,unique=true)  
-        save("Rewards_std2.pdf",fig)
+        lines!(ax,collect(x_ax), expected_returns_plotter, linestyle = :dash, label="Theoretical max returns")
+        axislegend(ax, position =:rb ,unique=true) 
+        if saveas == nothing 
+            save("Rewards_std.pdf",fig)
+        else
+            save(saveas,fig)
+        end
         fig
     end
     display(fig)    
@@ -159,6 +162,21 @@ function prepair_data(filepaths::Vector{String}, std_dev=true)
     
     if std_dev
         stds = DataFrame(std(data, dims=3)[:,:,1], cols)
+        return means, stds
+    else
+        return means
+    end
+end
+
+function prepair_data_1D(filepaths::Vector{String}, std_dev=true)
+    dfs = [CSV.read(f, DataFrame) for f in filepaths]
+    
+    data = hcat([Vector(df[:, 1]) for df in dfs]...)
+    
+    means = vec(mean(data, dims=2))
+    
+    if std_dev
+        stds = vec(std(data, dims=2))
         return means, stds
     else
         return means
