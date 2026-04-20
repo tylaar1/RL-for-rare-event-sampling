@@ -13,29 +13,33 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
 
     ## First construct a TrainState
     train_state = Training.TrainState(model, ps, st, Adam(0.005f0))
+    "these only apply for KL as we dont want to do 100s of kl calcs per interval"
+    T_step = parse(Int,ARGS[2])
+    T_max = parse(Int,ARGS[3])
+    T_min = parse(Int,ARGS[4])
 
     average_returns =[]
     s0 = starting_state(problem)
     traj = Trajectory() 
-    T = problem.trajectory_length
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
     KL_tasks = nothing
+    efficient_tasks = nothing
     n_logs = epochs / LOG_INTERVAL
-    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(problem_3D.trajectory_lengths))
+    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(T_min:T_step:T_max))
     row_idx = 1
-    @load "data/solutions10-20.jld2" solutions
-    #@load "data/solutions10-30.jld2" solutions
-    solutions_arr = [solutions[T] for T in problem_3D.trajectory_lengths]
+    @load "data/solutions10-200.jld2" solutions
+    #solutions_arr = [solutions[T] for T in problem_3D.trajectory_lengths]
+    solutions_arr = [solutions[T] for T in T_min:T_step:T_max]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
             ps_copy = deepcopy(ps)
             st_copy = deepcopy(st)
-            KL_tasks = [@spawn neural_kl_divergence(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, problem_3D.trajectory_lengths)
-    ]
+            #KL_tasks = [@spawn neural_kl_divergence(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, problem_3D.trajectory_lengths)]
+            efficient_tasks = [@spawn efficient_kl(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, T_min:T_step:T_max)]
         end
-        states_list  = Matrix{Float32}[]
+        states_list  = Matrix{Float32}[] #if we generate all Temp_T before we can preallocate this memory
         actions_list = Matrix{Float32}[]
         returns_list = Matrix{Float32}[]
         tot_returns = 0.0
@@ -62,15 +66,15 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
             (states,actions,returns,batch_size), #input/target pair
             train_state #model params etc
         )
-        if (i+1) % LOG_INTERVAL == 0 && KL_tasks !== nothing
-            KL_values = fetch.(KL_tasks)  
-            KL_divergence = mean(KL_values)
+        if (i+1) % LOG_INTERVAL == 0 && efficient_tasks !== nothing
+            KL_values = Float64.(fetch.(efficient_tasks)) 
+            KL_divergence = mean(KL_values) 
             D_kl[row_idx, :] = KL_values
             row_idx += 1
         end
         next!(p; showvalues = generate_showvalues(i,KL_divergence))
     end
-    KL_values = fetch.(KL_tasks)
+    KL_values = Float64.(fetch.(efficient_tasks)  )   
     KL_divergence = mean(KL_values)
     D_kl[row_idx, :] = KL_values
     return  average_returns, D_kl
@@ -295,6 +299,43 @@ function neural_kl_divergence(problem::ExcursionProblem,solution::ExactSolution,
     end
     Scaled_D_KL = D_kl/T
     return Scaled_D_KL
+end
+
+function efficient_kl(problem::ExcursionProblem3D, solution::ExactSolution, model, ps, st, T)
+    f = Dict{Tuple{Int,Int,Int}, Float64}()
+    probs = Dict{Tuple{Int64,Int64,Int64}, Float64}()
+    get_all_probs(model, ps, st, probs, problem, T)
+
+    for t in T:-1:0
+        for x in -t:2:t
+            s = (x, t, T)
+            if t == T
+                f[s] = 0.0
+                continue
+            end
+            f_s = 0.0
+            for a in (-1, +1)
+
+                s_next = (x + a, t+1, T)
+                θ_s = log(probs[s] / (1 - probs[s]))  #convert sigmoid back to logit
+                exact_s = solution.policy[s]          
+
+                if a == 1  
+                    log_π_a = -log1pexp(-θ_s)          # log(σ(θ))
+                    log_π_b = -log1pexp(-exact_s)
+                else
+                    log_π_a = -log1pexp(θ_s)           # log(1 - σ(θ))
+                    log_π_b = -log1pexp(exact_s)
+                end
+
+                π_a = exp(log_π_a)
+                kl_term = log_π_a - log_π_b            # log(π_a/π_b), stable
+                f_s += π_a * (kl_term + f[s_next])
+            end
+            f[s] = f_s
+        end
+    end
+    return f[(0, 0, T)] / T
 end
 
 function neural_kl_divergence(problem::ExcursionProblem3D,solution::ExactSolution, model, ps, st,T) 

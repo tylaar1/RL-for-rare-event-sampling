@@ -142,7 +142,8 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame)
             pg = Matrix(pg)
             _,N = size(pg)
             for i in 1:N
-                lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(8+2*i)") #8+2*i only works for numbers starting at 10 and increments of 2
+                #lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(8+2*i)") 
+                lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(20*i - 10)") 
             end
         end
         axislegend(ax, unique=true)
@@ -152,16 +153,18 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame)
     display(fig)
 end
 
-function prepair_data(filepaths::Vector{String}, std_dev=true)
+function prepair_data(filepaths::Vector{String},data_freq=nothing, std_dev=true)
     dfs = [CSV.read(f, DataFrame) for f in filepaths]
     cols = names(dfs[1])
-
-    data = cat([Matrix(df) for df in dfs]..., dims=3)
+    if data_freq !== nothing
+        cols = cols[1:data_freq:end]
+    end
+    data = cat([Matrix(df[:,cols]) for df in dfs]..., dims=3)
     
     means = DataFrame(mean(data, dims=3)[:,:,1], cols)
-    
     if std_dev
         stds = DataFrame(std(data, dims=3)[:,:,1], cols)
+
         return means, stds
     else
         return means
@@ -200,7 +203,8 @@ function plot_kl_divergence_std(LOG_INTERVAL, epochs, pg=nothing, pg_std=nothing
         row = ceil(Int, i / ncols)
         col = mod1(i, ncols)
 
-        label_val = 8 + 2 * i   # 10, 12, 14, ...
+        #label_val = 8 + 2 * i   # 10, 12, 14, ...
+        label_val = 20*i - 10
         ax = CairoMakie.Axis(
             fig[row, col],
             xlabel  = "Epochs",
@@ -238,3 +242,23 @@ function plot_kl_divergence_std(LOG_INTERVAL, epochs, pg=nothing, pg_std=nothing
     display(fig)
 end
 
+function plot_kl_div_final(paths)
+    dfs = [CSV.read(f, DataFrame) for f in paths]
+    
+    # Extract final row from each df, returns vector of named tuples/rows
+    final_rows = [df[end, :] for df in dfs]
+    
+    # Average each column across all dfs
+    cols = names(dfs[1])
+    avg_finals = [mean([row[c] for row in final_rows]) for c in cols]
+    
+    # Extract numeric KL values from column names for x-axis
+    kl_values = [parse(Int, replace(c, "KL" => "")) for c in cols]
+    fig = CairoMakie.Figure(size=(800, 500))
+    ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl", title="Final KL divergence across epochs")
+    lines!(ax,kl_values,avg_finals)
+    vlines!(ax,[100],color=:red,linestyle=:dash, linewidth=2.5, label="learned boundry")
+
+
+    CairoMakie.save("log_D_kl_final.pdf", fig)
+end
