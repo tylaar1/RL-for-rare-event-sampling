@@ -1,7 +1,6 @@
-function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64);
+function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_INTERVAL::Int64,args,solutions)
     rng = Random.default_rng()
-    Random.seed!(rng, parse(Int,ARGS[1]))
-    #Random.seed!(rng, 0)
+    Random.seed!(rng, args.id)
 
     # Construct the layer
     model = Chain(Dense(3, 64, tanh), Chain(Dense(64, 64, tanh), Chain(Dense(64, 32, tanh), Dense(32, 1, sigmoid)))) #input state,output action probs
@@ -13,33 +12,25 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
 
     ## First construct a TrainState
     train_state = Training.TrainState(model, ps, st, Adam(0.005f0))
-    "these only apply for KL as we dont want to do 100s of kl calcs per interval"
-    T_step = parse(Int,ARGS[2])
-    T_max = parse(Int,ARGS[3])
-    T_min = parse(Int,ARGS[4])
 
-    average_returns =[]
-    s0 = starting_state(problem)
+    average_returns = Vector{Float64}(undef,epochs)
     traj = Trajectory() 
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
-    KL_tasks = nothing
     efficient_tasks = nothing
     n_logs = epochs / LOG_INTERVAL
-    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(T_min:T_step:T_max))
+    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(args.T_min_kl:args.T_step:args.T_max_kl))
     row_idx = 1
-    @load "data/solutions10-200.jld2" solutions
-    #solutions_arr = [solutions[T] for T in problem_3D.trajectory_lengths]
-    solutions_arr = [solutions[T] for T in T_min:T_step:T_max]
+    solutions_arr = [solutions[T] for T in args.T_min_kl:args.T_step:args.T_max_kl]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
             ps_copy = deepcopy(ps)
             st_copy = deepcopy(st)
             #KL_tasks = [@spawn neural_kl_divergence(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, problem_3D.trajectory_lengths)]
-            efficient_tasks = [@spawn efficient_kl(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, T_min:T_step:T_max)]
+            efficient_tasks = [@spawn efficient_kl(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, args.T_min_kl:args.T_step:args.T_max_kl)]
         end
-        states_list  = Matrix{Float32}[] #if we generate all Temp_T before we can preallocate this memory
+        states_list  = Matrix{Float32}[] #if we generate all Temp_T before we can preallocate this memory?
         actions_list = Matrix{Float32}[]
         returns_list = Matrix{Float32}[]
         tot_returns = 0.0
@@ -47,8 +38,7 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
             Temp_T = rand(problem_3D.trajectory_lengths)
             s0 = starting_state(problem_3D,Temp_T)
             sample_trajectory!(traj, problem_3D, s0, model, ps, st)
-            #sample_trajectory!(traj, problem, s0, model, ps, st)
-            pass = transitions(traj, problem.γ)
+            pass = transitions(traj, problem_3D.γ)
             tot_returns +=  pass[1][5]/Temp_T #gets return at original state
             push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, Temp_T)))     # (1, T)
@@ -59,14 +49,14 @@ function trainPG(problem::ExcursionProblem,problem_3D::ExcursionProblem3D,epochs
         actions = hcat(actions_list...) |> dev
         returns = hcat(returns_list...) |> dev
         avg_return = tot_returns/batch_size
-        push!(average_returns,avg_return)
+        average_returns[i] = avg_return
         gs, loss, stats, train_state = Training.single_train_step!(
             AutoEnzyme(), #auto diff
             PGLoss, #loss function
             (states,actions,returns,batch_size), #input/target pair
             train_state #model params etc
         )
-        if (i+1) % LOG_INTERVAL == 0 && efficient_tasks !== nothing
+        if (i+1) % LOG_INTERVAL == 0 && efficient_tasks !== nothing #handled async by @spawn as is eval metric not trainig data
             KL_values = Float64.(fetch.(efficient_tasks)) 
             KL_divergence = mean(KL_values) 
             D_kl[row_idx, :] = KL_values
@@ -93,44 +83,18 @@ function PGLoss(model, ps, st, (states, actions, returns,batch_size))
 end
 
 
-function sample_trajectory!(traj::Trajectory, a_problem::ExcursionProblem, s0::Tuple{Int64,Int64,Int64},model, ps, st)
+function sample_trajectory!(traj::Trajectory, a_problem::Union{ExcursionProblem, ExcursionProblem3D}, s0, model, ps, st)
     empty!(traj.states)
     empty!(traj.actions)
     empty!(traj.rewards)
     push!(traj.states, s0)
-
     while true
         current_state = traj.states[end]
-        if is_terminal(a_problem, current_state)
-            break
-        end
-
-
-        action, p_up = sample_action(model,current_state,ps,st)
+        is_terminal(a_problem, current_state) && break
+        action, p_up = sample_action(model, current_state, ps, st)
         ns = next_state(a_problem, current_state, action)
-        p_action = action == 2 ? p_up : 1-p_up
-        # 0.5 is the uniform probability
-        r = reward(a_problem, ns) - log(p_action/0.5)
-        append_transition(traj, ns, action, r)
-    end
-end
-
-function sample_trajectory!(traj::Trajectory, a_problem::ExcursionProblem3D, s0::Tuple{Int64,Int64,Int64},model, ps, st)
-    empty!(traj.states)
-    empty!(traj.actions)
-    empty!(traj.rewards)
-    push!(traj.states, s0)
-    _,_,T = s0 #get specific T for this problem
-    while true
-        current_state = traj.states[end]
-        if is_terminal(a_problem, current_state)
-            break
-        end
-        action, p_up = sample_action(model,current_state,ps,st)
-        ns = next_state(a_problem, current_state, action)
-        p_action = action == 2 ? p_up : 1-p_up
-        # 0.5 is the uniform probability
-        r = reward(a_problem, ns) - log(p_action/0.5)
+        p_action = action == 2 ? p_up : 1 - p_up
+        r = reward(a_problem, ns) - log(p_action / 0.5)
         append_transition(traj, ns, action, r)
     end
 end
@@ -148,7 +112,7 @@ function normalize_state(s)
     return [x / T, (T - t) / T, T / 100f0]  
 end
     
-function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int, batch_size::Int,LOG_INTERVAL::Int64)
+function trainAC(problem::ExcursionProblem,solutions,epochs::Int, batch_size::Int,LOG_INTERVAL::Int64)
     rng = Random.default_rng()
     Random.seed!(rng, 0)
     dev = cpu_device()
@@ -163,18 +127,21 @@ function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int,
     ps_critic, st_critic = Lux.setup(rng, critic_model) |> dev
     ts_critic = Training.TrainState(critic_model, ps_critic, st_critic, Adam(0.005f0))
 
-    average_returns = Float64[]
+    average_returns = Vector{Float64}(undef,epochs)
     s0 = starting_state(problem)
     traj = Trajectory()
     T = problem.trajectory_length
-    D_kl = Float64[]
+    solution = solutions[T]
+    D_kl = Vector{Float64}(undef,Int(epochs/LOG_INTERVAL))
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
+    row_idx = 1
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
             KL_divergence = neural_kl_divergence(problem,solution,actor_model,ps_actor,st_actor)
-            push!(D_kl,KL_divergence)
+            D_kl[row_idx] = KL_divergence
+            row_idx += 1
         end
         states_list = Matrix{Float32}[]
         actions_list = Matrix{Float32}[]
@@ -227,7 +194,7 @@ function trainAC(problem::ExcursionProblem, solution::ExactSolution,epochs::Int,
             ts_actor
         )
 
-        push!(average_returns, tot_returns / batch_size)
+        average_returns[i] = tot_returns/batch_size
         next!(p; showvalues = generate_showvalues(i,KL_divergence ))
     end
     return average_returns, D_kl

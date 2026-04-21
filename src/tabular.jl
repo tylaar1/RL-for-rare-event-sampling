@@ -177,11 +177,13 @@ function accumulate_gradient(pga::PolicyGradient, state, action, return_to_go)
     pga._parameter_gradients[state] += (a_binary - probs) * return_to_go
 end
 
-function train!(pga::PolicyGradient, problem::ExcursionProblem,solution::ExactSolution, epochs::Int64, learning_rate::Float64,batch_size::Int64,LOG_INTERVAL::Int64)
+function train!(pga::PolicyGradient, problem::ExcursionProblem, epochs::Int64, learning_rate::Float64,batch_size::Int64,LOG_INTERVAL::Int64,solutions)
     avg_returns = Float64[]
     s0 = starting_state(problem)
     traj = Trajectory()  
     D_kl = Float64[]
+    T = problem.trajectory_length
+    solution = solutions[T]
     for i in 1:epochs
         if i % LOG_INTERVAL == 0
             percent_done = i*100/epochs 

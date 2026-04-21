@@ -10,6 +10,8 @@
 
 #SBATCH -o ./logs/output-%A_%a.out # STDOUT
 
+FUNC="train" #choose from "train", "exact_sols", "plot_returns", "plot_kl", "plot_all"
+
 TASK=${SLURM_ARRAY_TASK_ID}
 """for kl not training"""
 T_STEP=2
@@ -21,4 +23,4 @@ cd ${SLURM_SUBMIT_DIR}
 module load julia-uoneasy/1.10.4-linux-x86_64
 
 julia --project=. -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
-julia --project=. run.jl $TASK $T_STEP $T_MAX $T_MIN
+julia --project=. run.jl $FUNC $TASK $T_STEP $T_MAX $T_MIN
