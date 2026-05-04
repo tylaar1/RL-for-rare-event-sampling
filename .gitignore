@@ -1,6 +1,7 @@
-#*.pdf
+*.pdf
 outs/
 2.sh
 gpt.sh
 #data/
 logs/
+*.jld2

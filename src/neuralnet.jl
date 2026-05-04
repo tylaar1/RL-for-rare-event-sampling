@@ -9,38 +9,49 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
     dev = cpu_device()
     # Parameter and State Variables
     ps, st = Lux.setup(rng, model) |> dev
-
+    schedule = CosAnneal(λ0=0.005, λ1=5e-6, period=epochs)
     ## First construct a TrainState
     train_state = Training.TrainState(model, ps, st, Adam(0.005f0))
 
     average_returns = Vector{Float64}(undef,epochs)
+    average_returns_unw = Vector{Float64}(undef,epochs)
     traj = Trajectory() 
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
     efficient_tasks = nothing
-    n_logs = epochs / LOG_INTERVAL
+    n_logs = epochs / LOG_INTERVAL #floor divide for int
     D_kl = Matrix{Float64}(undef, Int64(n_logs), length(args.T_min_kl:args.T_step:args.T_max_kl))
     row_idx = 1
     solutions_arr = [solutions[T] for T in args.T_min_kl:args.T_step:args.T_max_kl]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
-    for i in 1:epochs
+    for (i, η) in zip(1:epochs,schedule)
         if i % LOG_INTERVAL == 0
+            if i %(LOG_INTERVAL*4) == 0 #this shouldnt occur as frequently
+                jldsave("data/models/seed_$(args.id)_epoch_$(i).jld2"; ps, st)
+            end
             ps_copy = deepcopy(ps)
             st_copy = deepcopy(st)
             #KL_tasks = [@spawn neural_kl_divergence(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, problem_3D.trajectory_lengths)]
             efficient_tasks = [@spawn efficient_kl(problem_3D, sol, model, ps_copy, st_copy, T) for (sol, T) in zip(solutions_arr, args.T_min_kl:args.T_step:args.T_max_kl)]
         end
+        Optimisers.adjust!(train_state.optimizer_state, Float32(η))
         states_list  = Matrix{Float32}[] #if we generate all Temp_T before we can preallocate this memory?
         actions_list = Matrix{Float32}[]
         returns_list = Matrix{Float32}[]
         tot_returns = 0.0
+        tot_returns_unw = 0.0
         for _ in 1:batch_size #batch size is N trajectories not N datapoints
             Temp_T = rand(problem_3D.trajectory_lengths)
             s0 = starting_state(problem_3D,Temp_T)
             sample_trajectory!(traj, problem_3D, s0, model, ps, st)
             pass = transitions(traj, problem_3D.γ)
             tot_returns +=  pass[1][5]/Temp_T #gets return at original state
-            push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
+            tot_returns_unw +=  pass[1][5]
+            if args.Scale_inputs == 1
+                push!(states_list, Float32.(hcat([normalize_state(p[1]) for p in pass]...)))  # (3, T)
+            else
+                push!(states_list, Float32.(hcat([collect(p[1]) for p in pass]...)))  # (3, T)
+            end
             push!(actions_list, Float32.(reshape([p[2] for p in pass], 1, Temp_T)))     # (1, T)
             push!(returns_list, Float32.(reshape([p[5] for p in pass], 1, Temp_T)))     # (1, T)
         end
@@ -48,8 +59,8 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
         states  = hcat(states_list...)  |> dev
         actions = hcat(actions_list...) |> dev
         returns = hcat(returns_list...) |> dev
-        avg_return = tot_returns/batch_size
-        average_returns[i] = avg_return
+        average_returns[i] = tot_returns/batch_size
+        average_returns_unw[i]=tot_returns_unw/batch_size
         gs, loss, stats, train_state = Training.single_train_step!(
             AutoEnzyme(), #auto diff
             PGLoss, #loss function
@@ -67,7 +78,7 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
     KL_values = Float64.(fetch.(efficient_tasks)  )   
     KL_divergence = mean(KL_values)
     D_kl[row_idx, :] = KL_values
-    return  average_returns, D_kl
+    return  average_returns,average_returns_unw, D_kl
 end
 
 function PGLoss(model, ps, st, (states, actions, returns,batch_size)) 
@@ -109,7 +120,7 @@ end
 
 function normalize_state(s)
     x, t, T = s
-    return [x / T, (T - t) / T, T / 100f0]  
+    return [x / T, t / T, T]  
 end
     
 function trainAC(problem::ExcursionProblem,solutions,epochs::Int, batch_size::Int,LOG_INTERVAL::Int64)

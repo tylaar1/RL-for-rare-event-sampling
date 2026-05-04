@@ -11,6 +11,8 @@ using Tables
 using Base.Threads
 using JLD2
 using DataFrames
+using ParameterSchedulers
+using ColorSchemes
 
 include("types.jl")
 include("problem_setup.jl")
@@ -24,6 +26,7 @@ function parse_args()
         T_step   = parse(Int, ARGS[3]),
         T_max_kl = parse(Int, ARGS[4]),
         T_min_kl = parse(Int, ARGS[5]),
+        Scale_inputs = parse(Int, ARGS[6]),
     )
 end
 
@@ -50,18 +53,19 @@ function main()
     init_pga(pga, problem)
 
     #set up training hyperparams
-    epochs = 2000
+    epochs = 50000
     batch_size = 64
-    LOG_INTERVAL = 100
+    LOG_INTERVAL = 500
     α = 0.05
     @load "data/solutions10-200.jld2" solutions
     #learn tabular policy
     tab_returns, D_kl_tab = train!(pga, problem, epochs, α, batch_size,LOG_INTERVAL,solutions)
     #learn NN policy
-    pg_returns,D_kl_PG = trainPG(problem_3D,epochs,batch_size,LOG_INTERVAL,args,solutions)
+    pg_returns,returns_unw,D_kl_PG = trainPG(problem_3D,epochs,batch_size,LOG_INTERVAL,args,solutions)
     #ac_returns,D_kl_AC = trainAC(problem,solutions,epochs,batch_size,LOG_INTERVAL)
-    CSV.write("data/d_kl_$(args.T_max_kl) _$(args.id).csv", NamedTuple(Symbol("KL$(T)") => D_kl_PG[:, i] for (i, T) in enumerate(args.T_min_kl:args.T_step:args.T_max_kl))) #2 = step size
-    CSV.write("data/returns_$(args.T_max_kl) _$(args.id).csv", (returns = vec(pg_returns),))
+    CSV.write("data/long/d_kl_$(args.T_max_kl) _$(args.id).csv", NamedTuple(Symbol("KL$(T)") => D_kl_PG[:, i] for (i, T) in enumerate(args.T_min_kl:args.T_step:args.T_max_kl))) #2 = step size
+    CSV.write("data/long/returns_$(args.T_max_kl) _$(args.id).csv", (returns = vec(pg_returns),))
+    CSV.write("data/long/returns_unw_$(args.T_max_kl) _$(args.id).csv", (returns = vec(returns_unw),))
 end
 
 function get_exact_sols()
@@ -95,24 +99,27 @@ function get_exact_sols()
 end
     
 function kl_plotter()
-    paths = ["data/d_kl_200 _$i.csv" for i in 1:10]
+    paths = ["data/long/d_kl_200 _$i.csv" for i in 1:10]
     data_freq = 10 #only select every nth df so that graphs remain tidy
     means,std = prepair_data(paths,data_freq)
-    data_log_int = 100
-    data_epochs = 2000
-    plot_kl_divergence(data_log_int,data_epochs,means)
-    plot_kl_divergence_std(data_log_int,data_epochs,means,std)
-    plot_kl_div_final(paths)
-
+    data_log_int = 500
+    data_epochs = 50000
+    save_type = "svg"
+    #plot_kl_divergence_std(data_log_int,data_epochs,means,std)
+    normalise = [true,false]
+    for arg in normalise
+        plot_kl_div_final(paths,arg,save_type)
+        plot_kl_divergence(data_log_int,data_epochs,means,save_type,arg)
+    end
 end
 
 function returns_plotter()
-    paths = ["data/returns_200 _$i.csv" for i in 1:10]
+    paths = ["data/long/returns_200 _$i.csv" for i in 1:10]
     means,std = prepair_data_1D(paths)
     @load "data/solutions10-200.jld2" solutions
     T_min = 10 
     T_max = 100
-    data_epochs = 2000
+    data_epochs = 50000
     solutions_arr = [solutions[T].values[(0, 0, T)]/T for T in T_min:2:T_max]
     expected_max_return = mean(solutions_arr) #assume every T is will appear approx exquivelant amount of times over large amount of repeats
     plot_returns_std(data_epochs,means,std,expected_max_return,"returns_normalised_std.pdf")

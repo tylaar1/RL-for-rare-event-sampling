@@ -62,7 +62,7 @@ function plot_returns_std(epochs,pg_returns,pg_returns_std,expected_returns,save
         lines!(ax, collect(x_ax), pg_returns, linewidth=2.5, label="PolicyGradient returns")
         lines!(ax,collect(x_ax), expected_returns_plotter, linestyle = :dash, label="Theoretical max returns")
         axislegend(ax, position =:rb ,unique=true) 
-        if saveas == nothing 
+        if saveas === nothing 
             save("Rewards_std.pdf",fig)
         else
             save(saveas,fig)
@@ -133,21 +133,31 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,D_kl=nothing,pg=nothing,ac=nothi
     display(fig)
 end
 
-function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame)
+function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame,save_type,normalise)
     fig = begin
         fig = CairoMakie.Figure(size=(800, 500))
-        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
+        #ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
+        ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl",yscale = log10,xscale=log10)
         plot_epochs = 1:epochs/LOG_INTERVAL 
+        plot_epochs = 1:epochs/LOG_INTERVAL 
+        x = LOG_INTERVAL .* collect(plot_epochs)
+        state = "normalised"
         if pg !== nothing
             pg = Matrix(pg)
             _,N = size(pg)
+            colors = cgrad(:viridis, N,categorical=true)
             for i in 1:N
-                #lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(8+2*i)") 
-                lines!(ax, LOG_INTERVAL*collect(plot_epochs), pg[:,i], linewidth=2.5,label = "Policy Gradient KL Divergence $(20*i - 10)") 
+                if normalise == false 
+                    y = pg[:,i] * ((20*i)-10)
+                    state = "unnormalised"
+                else
+                    y = pg[:,i]
+                end
+                lines!(ax, x, y, linewidth=2,color = (colors[i], 0.4),label = "T = $(20*i - 10)") 
             end
         end
-        axislegend(ax, unique=true)
-        save("log_D_kl_avg.pdf",fig)
+        axislegend(ax, position = :lb, unique = true)
+        save("log_D_kl_avg_$state.$save_type",fig)
         fig
     end
     display(fig)
@@ -242,7 +252,7 @@ function plot_kl_divergence_std(LOG_INTERVAL, epochs, pg=nothing, pg_std=nothing
     display(fig)
 end
 
-function plot_kl_div_final(paths)
+function plot_kl_div_final(paths,normalise,save_type)
     dfs = [CSV.read(f, DataFrame) for f in paths]
     
     # Extract final row from each df, returns vector of named tuples/rows
@@ -251,14 +261,17 @@ function plot_kl_div_final(paths)
     # Average each column across all dfs
     cols = names(dfs[1])
     avg_finals = [mean([row[c] for row in final_rows]) for c in cols]
-    
+    state = "normalised"
     # Extract numeric KL values from column names for x-axis
     kl_values = [parse(Int, replace(c, "KL" => "")) for c in cols]
+    if normalise == false #data comes normalised so we un normalise it
+        avg_finals=[val*kl for (val,kl) in zip(avg_finals,kl_values)]
+        state = "unnormalised"
+    end
     fig = CairoMakie.Figure(size=(800, 500))
-    ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl", title="Final KL divergence across epochs")
+    #ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl", title="Final $state KL divergence across epochs",yscale=log10)
+    ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl",yscale=log10)
     lines!(ax,kl_values,avg_finals)
     vlines!(ax,[100],color=:red,linestyle=:dash, linewidth=2.5, label="learned boundry")
-
-
-    CairoMakie.save("log_D_kl_final.pdf", fig)
+    CairoMakie.save("log_D_kl_final_normalise_$normalise.$save_type",fig)
 end
