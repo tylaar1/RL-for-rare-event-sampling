@@ -6,7 +6,7 @@
 #SBATCH --time=1:00:00
 #SBATCH --output=outs/shortq_%j.out
 
-FUNC="plot_all" #choose from "train", "exact_sols", "plot_returns", "plot_kl", "plot_all"
+FUNC="plot_kl" #choose from "train", "exact_sols", "plot_returns", "plot_kl", "plot_all"
 
 RANDOM_SEED=0 #allows use of args in this code rather than hardcoding them in the script
 T_STEP=2

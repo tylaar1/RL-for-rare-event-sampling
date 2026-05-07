@@ -147,11 +147,15 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame,save_type,normalis
             _,N = size(pg)
             colors = cgrad(:viridis, N,categorical=true)
             for i in 1:N
-                if normalise == false 
-                    y = pg[:,i] * ((20*i)-10)
+                if normalise == "false" 
+                    y = (pg[:,i] * ((20*i)-10)) 
                     state = "unnormalised"
+                elseif normalise == "to_origin"
+                    first_point = pg[1,i] 
+                    y = pg[:,i] / first_point
+                    state = "origin"
                 else
-                    y = pg[:,i]
+                    y = pg[:,i] 
                 end
                 lines!(ax, x, y, linewidth=2,color = (colors[i], 0.4),label = "T = $(20*i - 10)") 
             end
