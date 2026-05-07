@@ -258,13 +258,16 @@ end
 
 function plot_kl_div_final(paths,normalise,save_type)
     dfs = [CSV.read(f, DataFrame) for f in paths]
-    
+    initial_rows = [df[1, :] for df in dfs]
     # Extract final row from each df, returns vector of named tuples/rows
     final_rows = [df[end, :] for df in dfs]
-    
+    #final_rows = [collect(df[end, :]) ./ collect(df[1, :]) for df in dfs]
+
     # Average each column across all dfs
     cols = names(dfs[1])
+    avg_inits = [mean([row[c] for row in initial_rows]) for c in cols]
     avg_finals = [mean([row[c] for row in final_rows]) for c in cols]
+    avg_finals = avg_finals./avg_inits
     state = "normalised"
     # Extract numeric KL values from column names for x-axis
     kl_values = [parse(Int, replace(c, "KL" => "")) for c in cols]
