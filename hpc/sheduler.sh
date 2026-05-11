@@ -16,5 +16,5 @@ NORMIALISE=0
 module purge
 module load julia-uoneasy
 julia --project=. -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false)'
-julia --project=. -e 'using Pkg; Pkg.add("ColorSchemes")'
+#julia --project=. -e 'using Pkg; Pkg.add("ColorSchemes")'
 julia --project=. run.jl $FUNC $RANDOM_SEED $T_STEP $T_MAX $T_MIN $NORMIALISE

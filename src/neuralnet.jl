@@ -19,13 +19,13 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
     p = Progress(epochs; showspeed=true)
     KL_divergence = NaN
     efficient_tasks = nothing
-    n_logs = epochs / LOG_INTERVAL #floor divide for int
-    D_kl = Matrix{Float64}(undef, Int64(n_logs), length(args.T_min_kl:args.T_step:args.T_max_kl))
+    n_logs = epochs / LOG_INTERVAL  #floor divide for int
+    D_kl = Matrix{Float64}(undef, Int64(n_logs+1), length(args.T_min_kl:args.T_step:args.T_max_kl))
     row_idx = 1
     solutions_arr = [solutions[T] for T in args.T_min_kl:args.T_step:args.T_max_kl]
     generate_showvalues(i, KL_divergence) = () -> [("iteration count",i), ("KL Divergence",KL_divergence)]
     for (i, η) in zip(1:epochs,schedule)
-        if i % LOG_INTERVAL == 0
+        if i % LOG_INTERVAL == 1
             if i %(LOG_INTERVAL*4) == 0 #this shouldnt occur as frequently
                 jldsave("data/models/seed_$(args.id)_epoch_$(i).jld2"; ps, st)
             end
@@ -67,7 +67,7 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
             (states,actions,returns,batch_size), #input/target pair
             train_state #model params etc
         )
-        if (i+1) % LOG_INTERVAL == 0 && efficient_tasks !== nothing #handled async by @spawn as is eval metric not trainig data
+        if i % LOG_INTERVAL == 0 && efficient_tasks !== nothing #handled async by @spawn as is eval metric not trainig data
             KL_values = Float64.(fetch.(efficient_tasks)) 
             KL_divergence = mean(KL_values) 
             D_kl[row_idx, :] = KL_values

@@ -138,9 +138,8 @@ function plot_kl_divergence(LOG_INTERVAL,epochs,pg::DataFrame,save_type,normalis
         fig = CairoMakie.Figure(size=(800, 500))
         #ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl", title="Evolution of KL divergence wrt to time",yscale = log10,xscale=log10)
         ax = CairoMakie.Axis(fig[1,1], xlabel="Epochs", ylabel="D_kl",yscale = log10,xscale=log10)
-        plot_epochs = 1:epochs/LOG_INTERVAL 
-        plot_epochs = 1:epochs/LOG_INTERVAL 
-        x = LOG_INTERVAL .* collect(plot_epochs)
+        plot_epochs = (1:(epochs+LOG_INTERVAL)/LOG_INTERVAL) 
+        x = (LOG_INTERVAL .* collect(plot_epochs)) 
         state = "normalised"
         if pg !== nothing
             pg = Matrix(pg)

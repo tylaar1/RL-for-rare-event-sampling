@@ -107,9 +107,10 @@ function kl_plotter()
     save_type = "svg"
     #plot_kl_divergence_std(data_log_int,data_epochs,means,std)
     normalise = [true,false]
+    plot_kl_divergence(data_log_int,data_epochs,means,save_type,"to_origin")
     for arg in normalise
         plot_kl_div_final(paths,arg,save_type)
-        plot_kl_divergence(data_log_int,data_epochs,means,save_type,arg)
+        #plot_kl_divergence(data_log_int,data_epochs,means,save_type,"to_origin")
     end
 end
 
