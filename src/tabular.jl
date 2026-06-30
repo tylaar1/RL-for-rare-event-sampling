@@ -266,6 +266,31 @@ function calculate_policy!(problem::ExcursionProblem, solution::ExactSolution, s
     solution.policy[s] = theta
 end
 
+function calculate_local_policy!(problem::ExcursionProblem, solution::ExactSolution, s)
+    x, t, T = s
+    s_prime_up   = (x+1, t+1, T)
+    s_prime_down = (x-1, t+1, T)
+
+    final_step = t == T - 1
+
+    Q_up   = reward(problem, s_prime_up)   
+    Q_down = reward(problem, s_prime_down) 
+
+    theta = Q_up - Q_down  
+
+    p_up   = logistic(theta)
+    p_down = 1.0 - p_up  # or logistic(-theta) if theta is very large
+
+    entropy_up   = -log1pexp(-theta) + log(2)
+    entropy_down = -log1pexp( theta) + log(2)
+
+    V = p_up   * (Q_up   - entropy_up)   +
+        p_down * (Q_down - entropy_down)
+
+    solution.values[s] = V
+    solution.policy[s] = theta
+end
+
 
 
 function kl_divergence(problem::ExcursionProblem,pga::PolicyGradient,solution::ExactSolution)
@@ -299,4 +324,103 @@ function kl_divergence(problem::ExcursionProblem,pga::PolicyGradient,solution::E
         end
     end
     return D_kl
+end
+
+function efficient_kl(problem::ExcursionProblem, pga::PolicyGradient, solution::ExactSolution)
+    T = problem.trajectory_length
+    f = Dict{Any, Float64}()
+
+    for t in T:-1:0
+        for x in -t:2:t
+            s = (x, t, T)
+            if t == T
+                f[s] = 0.0
+                continue
+            end
+            f_s = 0.0
+            for a in 1:2
+                s_next = next_state(problem, s, a)
+
+                θ_s     = pga._policy_parameters[s]
+                exact_s = solution.policy[s]
+
+                if a == 2
+                    log_π_a = -log1pexp(-θ_s)   # log(σ(θ))
+                    log_π_b = -log1pexp(-exact_s)
+                else
+                    log_π_a = -log1pexp(θ_s)    # log(1 - σ(θ))
+                    log_π_b = -log1pexp(exact_s)
+                end
+
+                π_a = exp(log_π_a)
+                f_s += π_a * ((log_π_a - log_π_b) + f[s_next])
+            end
+            f[s] = f_s
+        end
+    end
+
+    s0 = starting_state(problem)
+    return f[s0]/T
+end
+
+function efficient_kl(problem::ExcursionProblem, approx_sol::ExactSolution, solution::ExactSolution)
+    T = problem.trajectory_length
+    f = Dict{Any, Float64}()
+
+    for t in T:-1:0
+        for x in -t:2:t
+            s = (x, t, T)
+            if t == T
+                f[s] = 0.0
+                continue
+            end
+            f_s = 0.0
+            for a in 1:2
+                s_next = next_state(problem, s, a)
+
+                θ_s     = approx_sol.policy[s]
+                exact_s = solution.policy[s]
+
+                if a == 2
+                    log_π_a = -log1pexp(-θ_s)   # log(σ(θ))
+                    log_π_b = -log1pexp(-exact_s)
+                else
+                    log_π_a = -log1pexp(θ_s)    # log(1 - σ(θ))
+                    log_π_b = -log1pexp(exact_s)
+                end
+
+                π_a = exp(log_π_a)
+                f_s += π_a * ((log_π_a - log_π_b) + f[s_next])
+            end
+            f[s] = f_s
+        end
+    end
+
+    s0 = starting_state(problem)
+    return f[s0]/T
+end
+
+function unbiased_kl()
+    T_min = 10
+    T_max = 200
+    T_array = [T for T in T_min:T_max if T % 2 == 0]
+    kls = Dict{Int64,Float64}()
+    bias = 5.0 #should be a positive val
+    negative_penalty = -10.0 #should be a negative val
+    γ = 1.0
+    for T in T_array
+        R = def_problem(T,bias,negative_penalty)
+        problem = ExcursionProblem(R, T, γ)
+        params = Dict{Tuple{Int64,Int64,Int64},Float64}()  
+        gradients = Dict{Tuple{Int64,Int64,Int64},Float64}()
+        pga = PolicyGradient(γ, params, gradients)
+        for s in state_space(problem)
+            pga._policy_parameters[s]=0.5
+        end
+        unbiased_kl = kl_divergence(problem,pga,solutions[T])
+        println(unbiased_kl)
+        kls[T] = unbiased_kl
+    end
+    @save "data/unbiased10-200.jld2" kls
+    return kls
 end

@@ -255,7 +255,7 @@ function plot_kl_divergence_std(LOG_INTERVAL, epochs, pg=nothing, pg_std=nothing
     display(fig)
 end
 
-function plot_kl_div_final(paths,normalise,save_type)
+function plot_kl_div_final(paths,normalise,save_type,local_kl)
     dfs = [CSV.read(f, DataFrame) for f in paths]
     initial_rows = [df[1, :] for df in dfs]
     # Extract final row from each df, returns vector of named tuples/rows
@@ -266,7 +266,8 @@ function plot_kl_div_final(paths,normalise,save_type)
     cols = names(dfs[1])
     avg_inits = [mean([row[c] for row in initial_rows]) for c in cols]
     avg_finals = [mean([row[c] for row in final_rows]) for c in cols]
-    avg_finals = avg_finals./avg_inits
+    std_finals = [std([row[c] for row in final_rows]) for c in cols]
+    #avg_finals = avg_finals./avg_inits
     state = "normalised"
     # Extract numeric KL values from column names for x-axis
     kl_values = [parse(Int, replace(c, "KL" => "")) for c in cols]
@@ -274,10 +275,27 @@ function plot_kl_div_final(paths,normalise,save_type)
         avg_finals=[val*kl for (val,kl) in zip(avg_finals,kl_values)]
         state = "unnormalised"
     end
+    @load "data/unbiased10-200.jld2" kls
+    unbiased_list = [kls[T] for T in 10:2:200]
+    if normalise == "unbiased" 
+        avg_finals=[val/kl for (val,kl) in zip(avg_finals,unbiased_list)]
+        std_finals = [val/kl for (val,kl) in zip(avg_finals,unbiased_list)] 
+        state = "uniform"
+    end
     fig = CairoMakie.Figure(size=(800, 500))
     #ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl", title="Final $state KL divergence across epochs",yscale=log10)
-    ax = CairoMakie.Axis(fig[1,1], xlabel="problem size (T)", ylabel="D_kl",yscale=log10)
+    ax = CairoMakie.Axis(fig[1,1], xlabel=L"problem size ($T$)", ylabel=L"D_{KL}(\pi_\theta \mid \pi^*) \,/\, D_{KL}(\pi_{unbiased} \mid \pi^*)",yscale=log10)
     lines!(ax,kl_values,avg_finals)
+    if normalise == "unbiased"
+        upper = avg_finals .+ std_finals
+        lower = max.(avg_finals .- std_finals)
+        band!(ax,kl_values,lower,upper, color = (:blue, 0.25))
+    end
+    if local_kl == true
+        local_kls = get_local_kl()
+        norm_locals = [val/kl for (val,kl) in zip(local_kls,unbiased_list)]
+        lines!(ax,kl_values,norm_locals)
+    end
     vlines!(ax,[100],color=:red,linestyle=:dash, linewidth=2.5, label="learned boundry")
     CairoMakie.save("log_D_kl_final_normalise_$normalise.$save_type",fig)
 end

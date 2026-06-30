@@ -3,7 +3,7 @@ function trainPG(problem_3D::ExcursionProblem3D,epochs::Int,batch_size::Int,LOG_
     Random.seed!(rng, args.id)
 
     # Construct the layer
-    model = Chain(Dense(3, 64, tanh), Chain(Dense(64, 64, tanh), Chain(Dense(64, 32, tanh), Dense(32, 1, sigmoid)))) #input state,output action probs
+    model = Chain(Dense(3, 64, tanh), Chain(Dense(64, 64, tanh), Dense(64, 1, sigmoid))) #input state,output action probs
 
     #dev = reactant_device() -- this needs to have all data 32 bit?
     dev = cpu_device()

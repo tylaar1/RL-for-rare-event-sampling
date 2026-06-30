@@ -6,6 +6,9 @@ const COMMANDS = Dict(
     "plot_returns" => returns_plotter,
     "plot_kl"      => kl_plotter,
     "plot_all"     => () -> (returns_plotter(); kl_plotter()),
+    "simple_plot"  => simple_plot,
+    "unbiased_kl"  => unbiased_kl,
+    "plot_visitation" => plot_visitation_density
 )
 
 function run()
