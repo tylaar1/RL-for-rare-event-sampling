@@ -1,148 +1,173 @@
-using LinearAlgebra
-using NNlib   
+using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics
 
+#copied from other files so this can run as a standalone script.
 struct ExcursionProblem
     rewards::Array{Float64,3}
     trajectory_length::Int
     γ::Float64
 end
 
-function construct_RNN(input_dim::Int,hidden_dim::Int)
-    a, b = -0.1, 0.1
-    init(m, n) = rand(m, n) .* (b - a) .+ a
-
-    V = init(input_dim, hidden_dim)    # hidden -> logit, requires input dim == output dim
-    W = init(hidden_dim, hidden_dim)   # recurrent
-    U = init(hidden_dim, input_dim)    # input -> hidden
-    B = zeros(hidden_dim)
-
-    return V,W,U,B
-end
-
-function forwards(V::Matrix{Float64},W::Matrix{Float64},U::Matrix{Float64},B::Vector{Float64},traj_length::Int64,init_state = 0.0,use_actuals=true)
-    h_prev = zeros(length(B))
-    hs = Vector{Float64}[]
-    ys = Float64[]
-    actuals = Int64[]
-    x = init_state
-    for _ in 1:traj_length
-        h = tanh.(U * [x] .+ W * h_prev .+ B)
-        push!(hs, h)
-        y = only(sigmoid.(V * h))
-        push!(ys, y)   # p_up
-        a = sample_action(y)
-        push!(actuals,a)
-        if use_actuals
-            x = a
-        else
-            x = y
-        end
-        h_prev = h
-    end
-    return hs,ys,actuals
-end
-
-
-function collect_rewards(env,ys,actions)
-    state = 0
-    rewards = Float64[]
-    t=1
-    for (y,a) in zip(ys,actions)
-        p_action = a == 1 ? y : 1 - y
-        state += 2*a - 1  #convert from 1/0 to 1/-1
-        r = reward(env,(state,t,env.trajectory_length)) - log(p_action/0.5)
-        push!(rewards,r)
-        t += 1
-    end
-    
-    return rewards
-end
-
-function sample_action(y)
-    action = rand() < y ? 1 : 0
-    return action   
-end
-
-function Loss(ys,actions,returns)
-    up_log_probs = log.(clamp.(ys,0.0,1.0))
-    down_log_probs = log.(clamp.(1.0 .- ys, 0.0, 1.0)) #clamp for numerical stability
-    selected_log_probs = actions.* up_log_probs .+ (1.0 .- actions) .* down_log_probs #assuming actions is 0/1
-    #selected_log_probs is the log probability assigned to the action taking place
-    L_t = -(selected_log_probs .* returns)
-    Loss = sum(L_t)
-    return Loss
-end
-
-function diff_fwd(ys,actions)
-    logit = log.(1 ./ ys .- 1)
-end
-
-function trainRNN(problem::ExcursionProblem,epochs::Int,LOG_INTERVAL::Int,args=false,solutions=false)
-    V,W,U,B = construct_RNN(1,16) 
-    λ = 0.01
-    #opt = Adam(λ)
-    #traj = Trajectory()
-    for _ in 1:epochs
-        hs, ys, actions = forwards(V,W,U,B,problem.trajectory_length)
-        rewards = collect_rewards(problem,ys,actions)
-        returns = reverse(cumsum(reverse(rewards)))
-        for (name, v) in (("ys", ys), ("actions", actions), ("rewards", rewards), ("returns", returns))
-            println(name, ": nan=", any(isnan, v), " inf=", any(isinf, v), " extrema=", extrema(v))
-        end
-        L = Loss(ys,actions,returns)
-        println(actions,rewards,returns)
-        println("--------------")
-        println(L)
-    end
-    return nothing
-
-end
-# ------------------------------------------------------------------------
-"from setup"
 function reward(problem::ExcursionProblem, s′)
-    x′, t′,T = s′
-    problem.rewards[x′ + T + 1, t′,T]
+    x′, t′, T = s′
+    problem.rewards[x′ + T + 1, t′, T]
 end
 
-function def_problem(T::Int64,bias::Float64,negative_penalty::Float64)
-    #R = Random.randn(Float64, 2T+1, T)
-    R = zeros( 2T+1, T,T) #now that we have arbitrary T we want to avoid learning noise
-    R[1:T, :,T] .+= negative_penalty
-    R[:, T,T] .= (-T:T) .^ 2 .* (-bias)
+function def_problem(T::Int64, bias::Float64, negative_penalty::Float64)
+    R = zeros(2T + 1, T, T)
+    R[1:T, :, T] .+= negative_penalty         # intermediate reward
+    R[:, T, T] .= (-T:T) .^ 2 .* (-bias)      # terminal reward
     return R
 end
 
-struct ExcursionProblem
-    rewards::Array{Float64,3}
-    trajectory_length::Int
-    γ::Float64
+# RNN
+function construct_RNN(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of matricies, note we assume input dim==output dim here   
+    init(m, n) = (rand(m, n) .- 0.5) .* 0.2
+    return (V = init(input_dim, hidden_dim),           # hidden -> logit
+            W = init(hidden_dim, hidden_dim),  # recurrent
+            U = init(hidden_dim, input_dim),   # input -> hidden
+            B = zeros(hidden_dim))
 end
-#-------------------------------------------------------------------------
-T = 10
-bias = 5.0
-negative_penalty = -10.0
-γ = 1.0
-R = def_problem(T, bias, negative_penalty)
-problem = ExcursionProblem(R, T, γ)
-
-trainRNN(problem,1,10)
 
 
+function step!(h, p, hprev, x) #performs one set of computations from input to output
+    mul!(h, p.W, hprev)
+    h .+= view(p.U, :, 1) .* x .+ p.B
+    h .= tanh.(h)
+    return dot(view(p.V, 1, :), h)
+end
 
-
-
-
-function forward!(zs, hs, p, x0)
-    x = x0                                     # [const] x0 is Const in autodiff
-    for t in eachindex(zs)                     # [diff] the loop is unrolled: only operations are recorded
-        hprev = view(hs, :, t)
-        h     = view(hs, :, t + 1)
-        mul!(h, p.W, hprev)                    # [diff] linear; gradient hits both W and h_{t-1}
-        h .+= view(p.U, :, 1) .* x .+ p.B      # [diff] x depends on θ for t>1 (see feedback note below)
-        h .= tanh.(h)                          # [diff] smooth; derivative 1 - h², saturates for |a| large
-        z = dot(view(p.V, 1, :), h)            # [diff] linear
-        zs[t] = z                              # [diff] mutation is fine for Enzyme, would break Zygote
-        x = sigmoid(z)                         # [diff] open-loop feedback: gradient flows back through
-    end                                        #        the input path, giving the extra σ'(z)·U·V term
+# Replay: deterministic, no rand. hs[:, 1] = h_0 = 0, hs[:, t+1] = h_t.
+function forward!(zs, hs, p, xs)
+    for t in eachindex(zs)
+        zs[t] = step!(view(hs, :, t + 1), p, view(hs, :, t), xs[t])
+    end
     return nothing
 end
+
+
+function rollout(problem::ExcursionProblem, p)
+    T = problem.trajectory_length
+    #data storage
+    n = length(p.B)  #length of hidden dim
+    hs = zeros(n, T + 1) 
+    zs = zeros(T); xs = zeros(T); actions = zeros(T)
+    rewards = zeros(T); logps = zeros(T)
+    x = 0.0
+    state = 0
+    for t in 1:T
+        xs[t] = x
+        zs[t] = step!(view(hs, :, t + 1), p, view(hs, :, t), x)
+        a = rand() < sigmoid(zs[t]) ? 1.0 : 0.0
+        logpa = a == 1.0 ? logsigmoid(zs[t]) : logsigmoid(-zs[t])
+        state += a == 1.0 ? 1 : -1
+        rewards[t] = reward(problem, (state, t, T)) - (logpa - log(0.5))
+        actions[t] = a
+        logps[t] = logpa
+        x = 2a - 1                              
+    end
+    return (; xs, actions, rewards, logps, zs)
+end
+
+function discounted_returns(rewards, γ)
+    G = similar(rewards)
+    acc = 0.0
+    for t in length(rewards):-1:1
+        acc = rewards[t] + γ * acc
+        G[t] = acc
+    end
+    return G
+end
+
+
+# weights[t] = discount_t * advantage_t / batch. xs, actions, weights are all constants.
+function surrogate!(zs, hs, p, xs, actions, weights)
+    forward!(zs, hs, p, xs)
+    L = 0.0
+    for t in eachindex(zs)
+        a = actions[t]
+        logp = a * logsigmoid(zs[t]) + (1 - a) * logsigmoid(-zs[t])
+        L -= logp * weights[t]
+    end
+    return L
+end
+
+# ───────────── training ─────────────
+function trainRNN(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
+                  hidden = 16, batch = 32, lr = 0.01, clip = 1.0)
+    @assert batch ≥ 2                           # baseline needs another traj to compare against
+    T = problem.trajectory_length
+    γ = problem.γ
+    p = construct_RNN(hidden)
+    opt = Optimisers.setup(OptimiserChain(ClipNorm(clip), Adam(lr)), p)
+    discount = γ .^ (0:T-1)                     
+
+    for epoch in 1:epochs
+        trajs = [rollout(problem, p) for _ in 1:batch]
+        Gs    = [discounted_returns(τ.rewards, γ) for τ in trajs]
+        Gsum  = sum(Gs)                         # elementwise over time
+
+        dp = Enzyme.make_zero(p)                # shadows ACCUMULATE, so reuse across the batch
+        for (τ, G) in zip(trajs, Gs)
+            baseline = (Gsum .- G) ./ (batch - 1)           # leave-one-out, per time step
+            weights  = discount .* (G .- baseline) ./ batch
+            zs = zeros(T); hs = zeros(hidden, T + 1)
+            dzs = zero(zs); dhs = zero(hs)
+            Enzyme.autodiff(Reverse, surrogate!, Active,
+                Duplicated(zs, dzs), Duplicated(hs, dhs), Duplicated(p, dp),
+                Const(τ.xs), Const(τ.actions), Const(weights))
+        end
+
+        gnorm = sqrt(sum(sum(abs2, g) for g in values(dp)))
+        opt, p = Optimisers.update(opt, p, dp)
+
+        if epoch % LOG_INTERVAL == 0
+            mean_total = mean(sum(τ.rewards) for τ in trajs)
+            @info "epoch $epoch" mean_total gnorm
+        end
+    end
+    return p
+end
+
+# ───────────── checks ─────────────
+function check_replay(problem, p)               # replay must reproduce the rollout's logits
+    τ = rollout(problem, p)
+    T = problem.trajectory_length
+    zs = zeros(T); hs = zeros(length(p.B), T + 1)
+    forward!(zs, hs, p, τ.xs)
+    @assert zs ≈ τ.zs
+end
+
+function fd_check(problem, p; ε = 1e-6)         # Enzyme vs central finite differences
+    τ = rollout(problem, p)
+    T = problem.trajectory_length; n = length(p.B)
+    w = randn(T)
+    f(q) = surrogate!(zeros(T), zeros(n, T + 1), q, τ.xs, τ.actions, w)
+    dp = Enzyme.make_zero(p)
+    Enzyme.autodiff(Reverse, surrogate!, Active,
+        Duplicated(zeros(T), zeros(T)), Duplicated(zeros(n, T + 1), zeros(n, T + 1)),
+        Duplicated(p, dp), Const(τ.xs), Const(τ.actions), Const(w))
+    q = deepcopy(p)
+    for k in keys(p)
+        A = getfield(q, k); gfd = similar(A)
+        for i in eachindex(A)
+            old = A[i]
+            A[i] = old + ε; fp = f(q)
+            A[i] = old - ε; fm = f(q)
+            A[i] = old
+            gfd[i] = (fp - fm) / (2ε)
+        end
+        println(k, ": rel err = ", norm(gfd - getfield(dp, k)) / norm(gfd))
+    end
+end
+
+function calc_KL_inefficient(p,T)
+    #generate every possible sequence of X
+    #pass into P to get likelihood of states
+end
+    
+T = 40
+problem = ExcursionProblem(def_problem(T, 0.5, -1.0), T, 1.0)
+p0 = construct_RNN(16)
+check_replay(problem, p0)
+fd_check(problem, p0)
+p = trainRNN(problem, 200, 10)
