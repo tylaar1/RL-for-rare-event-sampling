@@ -1,10 +1,15 @@
 using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics
 
-#copied from other files so this can run as a standalone script.
+const Reverse = Enzyme.Reverse #as multple packages export reverse
+
 struct ExcursionProblem
     rewards::Array{Float64,3}
     trajectory_length::Int
     γ::Float64
+end
+
+struct ExcursionStateSpace
+    problem::ExcursionProblem
 end
 
 function reward(problem::ExcursionProblem, s′)
@@ -19,6 +24,9 @@ function def_problem(T::Int64, bias::Float64, negative_penalty::Float64)
     return R
 end
 
+
+
+
 # RNN
 function construct_RNN(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of matricies, note we assume input dim==output dim here   
     init(m, n) = (rand(m, n) .- 0.5) .* 0.2
@@ -29,11 +37,15 @@ function construct_RNN(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of 
 end
 
 
-function step!(h, p, hprev, x) #performs one set of computations from input to output
+function step!(h, p, hprev, x,return_h=false) #performs one set of computations from input to output
     mul!(h, p.W, hprev)
     h .+= view(p.U, :, 1) .* x .+ p.B
     h .= tanh.(h)
-    return dot(view(p.V, 1, :), h)
+    if return_h == false
+        return dot(view(p.V, 1, :), h)
+    else
+        return dot(view(p.V, 1, :), h), h
+    end
 end
 
 # Replay: deterministic, no rand. hs[:, 1] = h_0 = 0, hs[:, t+1] = h_t.
@@ -160,14 +172,36 @@ function fd_check(problem, p; ε = 1e-6)         # Enzyme vs central finite diff
     end
 end
 
-function calc_KL_inefficient(p,T)
-    #generate every possible sequence of X
-    #pass into P to get likelihood of states
+
+function recursion(sequence,dict,T)
+    t = length(sequence)
+    s_prev = pop!(sequence.copy())
+    h_prev = dict[s_prev]
+    h = zeros(length(p.B))
+    x = sequence[last]
+    step!(h,p,h_prev,x)
+    if t == T
+        return dict
+    else 
+        up_seq = push!(sequence.copy(),1)
+        down_seq = push!(sequence.copy(),-1)
+        return recursion(up_seq,dict,T)
+        return recursion(down_seq,dict,T)
+    end
+end
+
+function get_hidden_states(p,problem)
+    states_dict = Dict{Tuple,Matrix}()
+    x = 0
+    t = 1
+    hs = zeros(length(p.B),T+1)
+    
 end
     
-T = 40
+T = 4
 problem = ExcursionProblem(def_problem(T, 0.5, -1.0), T, 1.0)
 p0 = construct_RNN(16)
-check_replay(problem, p0)
-fd_check(problem, p0)
+#check_replay(problem, p0)
+#fd_check(problem, p0)
 p = trainRNN(problem, 200, 10)
+get_hidden_states(p,problem)
