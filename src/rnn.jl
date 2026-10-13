@@ -1,4 +1,4 @@
-using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics
+using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics, JLD2, LogExpFunctions
 
 const Reverse = Enzyme.Reverse #as multple packages export reverse
 
@@ -10,6 +10,11 @@ end
 
 struct ExcursionStateSpace
     problem::ExcursionProblem
+end
+
+struct ExactSolution
+    values::Dict{Tuple{Int64,Int64,Int64},Float64}
+    policy::Dict{Tuple{Int64,Int64,Int64},Float64}
 end
 
 function reward(problem::ExcursionProblem, s′)
@@ -24,7 +29,15 @@ function def_problem(T::Int64, bias::Float64, negative_penalty::Float64)
     return R
 end
 
+function starting_state(problem::ExcursionProblem)
+    T = problem.trajectory_length
+    return (0, 0,T)
+end
 
+function next_state(::ExcursionProblem, s, a)
+    x, t ,T = s
+    (Int64(x + 2a - 3), t+1,T) 
+end
 
 
 # RNN
@@ -37,7 +50,7 @@ function construct_RNN(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of 
 end
 
 
-function step!(h, p, hprev, x,return_h=false) #performs one set of computations from input to output
+function step!(h, p, hprev, x,return_h=false) #modifies h in place, returns y
     mul!(h, p.W, hprev)
     h .+= view(p.U, :, 1) .* x .+ p.B
     h .= tanh.(h)
@@ -48,7 +61,6 @@ function step!(h, p, hprev, x,return_h=false) #performs one set of computations 
     end
 end
 
-# Replay: deterministic, no rand. hs[:, 1] = h_0 = 0, hs[:, t+1] = h_t.
 function forward!(zs, hs, p, xs)
     for t in eachindex(zs)
         zs[t] = step!(view(hs, :, t + 1), p, view(hs, :, t), xs[t])
@@ -91,7 +103,6 @@ function discounted_returns(rewards, γ)
 end
 
 
-# weights[t] = discount_t * advantage_t / batch. xs, actions, weights are all constants.
 function surrogate!(zs, hs, p, xs, actions, weights)
     forward!(zs, hs, p, xs)
     L = 0.0
@@ -103,7 +114,7 @@ function surrogate!(zs, hs, p, xs, actions, weights)
     return L
 end
 
-# ───────────── training ─────────────
+
 function trainRNN(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
                   hidden = 16, batch = 32, lr = 0.01, clip = 1.0)
     @assert batch ≥ 2                           # baseline needs another traj to compare against
@@ -116,11 +127,11 @@ function trainRNN(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
     for epoch in 1:epochs
         trajs = [rollout(problem, p) for _ in 1:batch]
         Gs    = [discounted_returns(τ.rewards, γ) for τ in trajs]
-        Gsum  = sum(Gs)                         # elementwise over time
+        Gsum  = sum(Gs)                         
 
-        dp = Enzyme.make_zero(p)                # shadows ACCUMULATE, so reuse across the batch
+        dp = Enzyme.make_zero(p)                # reset every batvh
         for (τ, G) in zip(trajs, Gs)
-            baseline = (Gsum .- G) ./ (batch - 1)           # leave-one-out, per time step
+            baseline = (Gsum .- G) ./ (batch - 1)           # -1 as we subtract G
             weights  = discount .* (G .- baseline) ./ batch
             zs = zeros(T); hs = zeros(hidden, T + 1)
             dzs = zero(zs); dhs = zero(hs)
@@ -140,7 +151,7 @@ function trainRNN(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
     return p
 end
 
-# ───────────── checks ─────────────
+# ───────────── checks (AI genrated) ─────────────
 function check_replay(problem, p)               # replay must reproduce the rollout's logits
     τ = rollout(problem, p)
     T = problem.trajectory_length
@@ -173,35 +184,83 @@ function fd_check(problem, p; ε = 1e-6)         # Enzyme vs central finite diff
 end
 
 
-function recursion(sequence,dict,T)
-    t = length(sequence)
-    s_prev = pop!(sequence.copy())
-    h_prev = dict[s_prev]
-    h = zeros(length(p.B))
-    x = sequence[last]
-    step!(h,p,h_prev,x)
-    if t == T
-        return dict
-    else 
-        up_seq = push!(sequence.copy(),1)
-        down_seq = push!(sequence.copy(),-1)
-        return recursion(up_seq,dict,T)
-        return recursion(down_seq,dict,T)
+
+#KL divergence section
+
+function expand!(dict_hs, dict_ys,p, sequence, T)
+    length(sequence) == T + 1 && return dict_hs, dict_ys    
+    h_prev = dict_hs[sequence]
+    for x in (1, -1)
+        push!(sequence, x)
+        h = zeros(length(p.B))
+        y = step!(h, p, h_prev, x) #logit not probability
+        dict_hs[copy(sequence)] = h
+        dict_ys[copy(sequence)] = y
+        expand!(dict_hs,dict_ys, p, sequence, T)
+        pop!(sequence)                          # backtrack
     end
+    return dict_hs,dict_ys
 end
 
-function get_hidden_states(p,problem)
-    states_dict = Dict{Tuple,Matrix}()
-    x = 0
-    t = 1
-    hs = zeros(length(p.B),T+1)
-    
+function build_states(p, h0, T)
+    seq = [0]
+    y0 = dot(view(p.V, 1, :), h0)
+    dict_hs = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
+    dict_ys = Dict{Vector{Int},typeof(y0)}(copy(seq) => y0)
+    return expand!(dict_hs,dict_ys, p, seq, T)
+end
+
+function RNN_kl_divergence(problem::ExcursionProblem,solution::ExactSolution, ys_dict)  #simple adaption from NN kl div
+    D_kl = 0.0
+    T = problem.trajectory_length
+    total = 0.0
+    log_p_theta = 0.0
+    for i in 0:2^T-1
+        total += exp(log_p_theta)
+        actions = i
+        s = starting_state(problem)
+        log_p_theta = 0.0
+        log_p_exact = 0.0
+        actions_list=Int[0]
+        for _ in 1:T
+            #theta_s = ys_dict[actions_list]
+            a = actions % 2 + 1  # action space is 1/2 not 0/1
+            push!(actions_list, 2*(actions % 2) - 1)
+            actions >>= 1
+            s_prime = next_state(problem, s, a)
+
+            theta_s = ys_dict[actions_list]
+            exact_s = solution.policy[s]
+
+            if a == 2 #swapped for equivelant functions in log terms for numerical stability
+                log_p_theta += -log1pexp(-theta_s)   # log(sigmoid(θ))
+                log_p_exact  += -log1pexp(-exact_s)
+            else
+                log_p_theta += -log1pexp( theta_s)   # log(1 - sigmoid(θ)) = log(sigmoid(-θ))
+                log_p_exact  += -log1pexp( exact_s)
+            end
+            s = s_prime
+            
+        end
+        # guard: if log_p_theta = -Inf, contribution is 0
+        if isfinite(log_p_theta)
+            D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
+        end
+    end
+    total += exp(log_p_theta)
+    Scaled_D_KL = D_kl/T
+    return Scaled_D_KL,total
 end
     
-T = 4
+T = 10
 problem = ExcursionProblem(def_problem(T, 0.5, -1.0), T, 1.0)
-p0 = construct_RNN(16)
+hidden_dim = 16
+p0 = construct_RNN(hidden_dim)
 #check_replay(problem, p0)
 #fd_check(problem, p0)
 p = trainRNN(problem, 200, 10)
-get_hidden_states(p,problem)
+hs, ys = build_states(p,zeros(hidden_dim),T)
+@load "data/solutions10-200.jld2" solutions
+solution = solutions[T]
+Kl = RNN_kl_divergence(problem,solution,ys)#
+println(Kl)
