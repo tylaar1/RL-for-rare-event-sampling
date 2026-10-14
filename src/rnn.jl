@@ -248,7 +248,7 @@ function RNN_kl_divergence(problem::ExcursionProblem,solution::ExactSolution, ys
     return Scaled_D_KL,total
 end
     
-T = 10
+T = 20
 problem = ExcursionProblem(def_problem(T, 0.5, -1.0), T, 1.0)
 hidden_dim = 16
 p0 = construct_RNN(hidden_dim)
