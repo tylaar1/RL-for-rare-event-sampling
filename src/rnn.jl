@@ -50,15 +50,11 @@ function construct_RNN(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of 
 end
 
 
-function step!(h, p, hprev, x,return_h=false) #modifies h in place, returns y
+function step!(h, p, hprev, x) #modifies h in place, returns y
     mul!(h, p.W, hprev)
     h .+= view(p.U, :, 1) .* x .+ p.B
     h .= tanh.(h)
-    if return_h == false
-        return dot(view(p.V, 1, :), h)
-    else
-        return dot(view(p.V, 1, :), h), h
-    end
+    return dot(view(p.V, 1, :), h)
 end
 
 function forward!(zs, hs, p, xs)
