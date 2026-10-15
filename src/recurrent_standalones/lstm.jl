@@ -44,36 +44,41 @@ end
 # LSTM
 function construct_LSTM(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of matricies, note we assume input dim==output dim here   
     init(m, n) = (rand(m, n) .- 0.5) .* 0.2
-    return (V = init(input_dim, hidden_dim),          
-            W_input = init(hidden_dim, hidden_dim), 
-            W_forget = init(hidden_dim, hidden_dim),
-            W_output = init(hidden_dim, hidden_dim),
-            W_candidate = init(hidden_dim, hidden_dim),
-            U_input = init(hidden_dim, input_dim),
-            U_forget = init(hidden_dim, input_dim),
-            U_output = init(hidden_dim, input_dim),
-            U_candidate = init(hidden_dim, input_dim),
-            B_input = zeros(hidden_dim),
-            B_forget = ones(hidden_dim),
-            B_output = zeros(hidden_dim),
-            B_candidate = zeros(hidden_dim),
-            B_out = zeros(input_dim))
+    return (W_1 = init(4*hidden_dim,hidden_dim), #input,forget,output,candidate
+            U_1 = init(4*hidden_dim,input_dim),
+            B_1 = vcat(zeros(hidden_dim), ones(hidden_dim), zeros(hidden_dim), ones(hidden_dim)), #input(0),forget(1),output(0),candidate(1)
+            W_2 = init(4*hidden_dim,hidden_dim), #input,forget,output,candidate
+            U_2 = init(4*hidden_dim,hidden_dim), #input is output of first layer so same dim as hidden
+            B_2 = vcat(zeros(hidden_dim), ones(hidden_dim), zeros(hidden_dim), ones(hidden_dim)), #input(0),forget(1),output(0),candidate(1)
+            V = init(input_dim,hidden_dim), #only used for genersting logits, not for state update
+            B_out = zeros(input_dim)) #only used for generating logits, not for state update
 end
 
 
-function step!(h,c, p, hprev,cprev, x) 
-    input_gate = σ.(view(p.U_input, :, 1) .* x .+ p.B_input .+ p.W_input * hprev) #view into U due to input dim==1
-    forget_gate = σ.(view(p.U_forget, :, 1) .* x .+ p.B_forget .+ p.W_forget * hprev)
-    output_gate = σ.(view(p.U_output, :, 1) .* x .+ p.B_output .+ p.W_output * hprev)
-    candidate_mem = tanh.(view(p.U_candidate, :, 1) .* x .+ p.B_candidate .+ p.W_candidate * hprev)
-    c .= forget_gate .* cprev .+ input_gate .* candidate_mem
-    h .= tanh.(c) .* output_gate
-    return dot(view(p.V, 1, :), h) .+ p.B_out[1] #one element vector so do scalar addition.
+function step!(h_1,c_1,h_2,c_2, p, hprev_1,cprev_1, hprev_2,cprev_2, x) 
+    hidden_size = length(h_1)
+    #println("size of W_1: ", size(p.W_1), " size of hprev_1: ", size(hprev_1), " size of U_1: ", size(view(p.U_1, :, 1) ), " size of x: ", size(x), " size of B_1: ", size(p.B_1))
+    ins_1 = p.W_1 * hprev_1 .+ view(p.U_1, :, 1) .* x .+ p.B_1
+    input_gate = σ.(view(ins_1, 1:hidden_size)) 
+    forget_gate = σ.(view(ins_1, hidden_size+1:2*hidden_size)) 
+    output_gate = σ.(view(ins_1, 2*hidden_size+1:3*hidden_size)) 
+    candidate_mem = tanh.(view(ins_1, 3*hidden_size+1:4*hidden_size)) 
+    c_1 .= forget_gate .* cprev_1 .+ input_gate .* candidate_mem
+    h_1 .= tanh.(c_1) .* output_gate
+    #println("size of W_2: ", size(p.W_2), " size of hprev_2: ", size(hprev_2), " size of U_2: ", size(p.U_2 ), " size of h_1: ", size(h_1), " size of B_2: ", size(p.B_2))
+    ins_2 = p.W_2 * hprev_2 .+ p.U_2* h_1 .+ p.B_2 #note we now have matrix multiplication for the second layer as input is now a vector of size hidden_dim, not a scalar
+    input_gate = σ.(view(ins_2, 1:hidden_size)) #these variables are safe to reuse as they are not used after this point - unsure on good practice?
+    forget_gate = σ.(view(ins_2, hidden_size+1:2*hidden_size))
+    output_gate = σ.(view(ins_2, 2*hidden_size+1:3*hidden_size))
+    candidate_mem = tanh.(view(ins_2, 3*hidden_size+1:4*hidden_size))
+    c_2 .= forget_gate .* cprev_2 .+ input_gate .* candidate_mem
+    h_2 .= tanh.(c_2) .* output_gate
+    return dot(view(p.V, 1, :), h_2) .+ p.B_out[1] #one element vector so do scalar addition.
 end
 
-function forward!(zs, hs, cs,p, xs)
+function forward!(zs, hs_1, cs_1, hs_2, cs_2, p, xs)
     for t in eachindex(zs)
-        zs[t] = step!(view(hs, :, t + 1), view(cs, :, t + 1), p, view(hs, :, t), view(cs, :, t), xs[t])
+        zs[t] = step!(view(hs_1, :, t + 1), view(cs_1, :, t + 1), view(hs_2, :, t + 1), view(cs_2, :, t + 1), p, view(hs_1, :, t), view(cs_1, :, t), view(hs_2, :, t), view(cs_2, :, t), xs[t])
     end
     return nothing
 end
@@ -82,16 +87,18 @@ end
 function rollout(problem::ExcursionProblem, p)
     T = problem.trajectory_length
     #data storage
-    n = length(p.B_input)  #length of hidden dim
-    hs = zeros(n, T + 1) 
-    cs = zeros(n, T + 1)
+    n = length(view(p.V, 1, :))  #length of hidden dim
+    hs_1 = zeros(n, T + 1) 
+    cs_1 = zeros(n, T + 1)
+    hs_2 = zeros(n, T + 1)
+    cs_2 = zeros(n, T + 1)
     zs = zeros(T); xs = zeros(T); actions = zeros(T)
     rewards = zeros(T); logps = zeros(T)
     x = 0.0
     state = 0
     for t in 1:T
         xs[t] = x
-        zs[t] = step!(view(hs, :, t + 1), view(cs, :, t + 1), p, view(hs, :, t), view(cs, :, t), x)
+        zs[t] = step!(view(hs_1, :, t + 1), view(cs_1, :, t + 1), view(hs_2, :, t + 1), view(cs_2, :, t + 1), p, view(hs_1, :, t), view(cs_1, :, t), view(hs_2, :, t), view(cs_2, :, t), x)
         a = rand() < sigmoid(zs[t]) ? 1.0 : 0.0
         logpa = a == 1.0 ? logsigmoid(zs[t]) : logsigmoid(-zs[t])
         state += a == 1.0 ? 1 : -1
@@ -114,8 +121,8 @@ function discounted_returns(rewards, γ)
 end
 
 
-function surrogate!(zs, hs, cs, p, xs, actions, weights)
-    forward!(zs, hs, cs, p, xs)
+function surrogate!(zs, hs_1, cs_1, hs_2, cs_2, p, xs, actions, weights)
+    forward!(zs, hs_1, cs_1, hs_2, cs_2, p, xs)
     L = 0.0
     for t in eachindex(zs)
         a = actions[t]
@@ -144,10 +151,10 @@ function trainLSTM(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
         for (τ, G) in zip(trajs, Gs)
             baseline = (Gsum .- G) ./ (batch - 1)           # -1 as we subtract G
             weights  = discount .* (G .- baseline) ./ batch
-            zs = zeros(T); hs = zeros(hidden, T + 1); cs = zeros(hidden, T + 1)
-            dzs = zero(zs); dhs = zero(hs); dcs = zero(cs)
+            zs = zeros(T); hs_1 = zeros(hidden, T + 1); cs_1 = zeros(hidden, T + 1); hs_2 = zeros(hidden, T + 1); cs_2 = zeros(hidden, T + 1)
+            dzs = zero(zs); dhs_1 = zero(hs_1); dcs_1 = zero(cs_1); dhs_2 = zero(hs_2); dcs_2 = zero(cs_2)
             Enzyme.autodiff(Reverse, surrogate!, Active,
-                Duplicated(zs, dzs), Duplicated(hs, dhs), Duplicated(cs, dcs), Duplicated(p, dp),
+                Duplicated(zs, dzs), Duplicated(hs_1, dhs_1), Duplicated(cs_1, dcs_1), Duplicated(hs_2, dhs_2), Duplicated(cs_2, dcs_2), Duplicated(p, dp),
                 Const(τ.xs), Const(τ.actions), Const(weights))
         end
 
@@ -166,20 +173,20 @@ end
 function check_replay(problem, p)               # replay must reproduce the rollout's logits
     τ = rollout(problem, p)
     T = problem.trajectory_length
-    zs = zeros(T); hs = zeros(length(p.B_input), T + 1); cs = zeros(length(p.B_input), T + 1)
-    forward!(zs, hs, cs, p, τ.xs)
+    zs = zeros(T); hs_1 = zeros(length(view(p.V, 1, :)), T + 1); cs_1 = zeros(length(view(p.V, 1, :)), T + 1); hs_2 = zeros(length(view(p.V, 1, :)), T + 1); cs_2 = zeros(length(view(p.V, 1, :)), T + 1)
+    forward!(zs, hs_1, cs_1, hs_2, cs_2, p, τ.xs)
     @assert zs ≈ τ.zs
 end
 
 function fd_check(problem, p; ε = 1e-6)         # Enzyme vs central finite differences
     τ = rollout(problem, p)
-    T = problem.trajectory_length; n = length(p.B_input)
+    T = problem.trajectory_length; n = length(view(p.V, 1, :))
     w = randn(T)
-    f(q) = surrogate!(zeros(T), zeros(n, T + 1), zeros(n, T + 1), q, τ.xs, τ.actions, w)
+    f(q) = surrogate!(zeros(T), zeros(n, T + 1), zeros(n, T + 1), zeros(n, T + 1), zeros(n, T + 1), q, τ.xs, τ.actions, w)
     dp = Enzyme.make_zero(p)
     Enzyme.autodiff(Reverse, surrogate!, Active,
         Duplicated(zeros(T), zeros(T)), Duplicated(zeros(n, T + 1), zeros(n, T + 1)),
-        Duplicated(zeros(n, T + 1), zeros(n, T + 1)), Duplicated(p, dp), Const(τ.xs), Const(τ.actions), Const(w))
+        Duplicated(zeros(n, T + 1), zeros(n, T + 1)), Duplicated(zeros(n, T + 1), zeros(n, T + 1)), Duplicated(zeros(n, T + 1), zeros(n, T + 1)), Duplicated(p, dp), Const(τ.xs), Const(τ.actions), Const(w))
     q = deepcopy(p)
     for k in keys(p)
         A = getfield(q, k); gfd = similar(A)
@@ -198,34 +205,42 @@ end
 
 #KL divergence section
 
-function expand!(dict_hs, dict_cs, dict_ys, p, sequence, T)
-    length(sequence) == T + 1 && return dict_hs, dict_cs, dict_ys    
-    h_prev = dict_hs[sequence]
-    c_prev = dict_cs[sequence]
+function expand!(dict_hs_1, dict_cs_1, dict_hs_2, dict_cs_2, dict_ys, p, sequence, T)
+    length(sequence) == T + 1 && return dict_hs_1, dict_cs_1, dict_hs_2, dict_cs_2, dict_ys    
+    h_prev = dict_hs_1[sequence]
+    c_prev = dict_cs_1[sequence]
+    h_prev_2 = dict_hs_2[sequence]
+    c_prev_2 = dict_cs_2[sequence]
     for x in (1, -1)
         push!(sequence, x)
-        h = zeros(length(p.B_input))
-        c = zeros(length(p.B_input))
-        y = step!(h, c, p, h_prev,c_prev, x) #logit not probability
-        dict_hs[copy(sequence)] = h
-        dict_cs[copy(sequence)] = c
+        h_1 = zeros(length(view(p.V, 1, :)))
+        c_1 = zeros(length(view(p.V, 1, :)))
+        h_2 = zeros(length(view(p.V, 1, :)))
+        c_2 = zeros(length(view(p.V, 1, :)))
+        y = step!(h_1, c_1,h_2, c_2, p, h_prev,c_prev,h_prev_2, c_prev_2, x) #logit not probability
+        dict_hs_1[copy(sequence)] = h_1
+        dict_cs_1[copy(sequence)] = c_1
+        dict_hs_2[copy(sequence)] = h_2
+        dict_cs_2[copy(sequence)] = c_2
         dict_ys[copy(sequence)] = y
-        expand!(dict_hs,dict_cs,dict_ys, p, sequence, T)
+        expand!(dict_hs_1,dict_cs_1,dict_hs_2,dict_cs_2,dict_ys, p, sequence, T)
         pop!(sequence)                          # backtrack
     end
-    return dict_hs,dict_cs,dict_ys
+    return dict_hs_1,dict_cs_1,dict_hs_2,dict_cs_2,dict_ys
 end
 
 function build_states(p, h0, T)
     seq = [0]
     y0 = dot(view(p.V, 1, :), h0)
-    dict_hs = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
-    dict_cs = Dict{Vector{Int},typeof(h0)}(copy(seq) => zeros(size(h0)))
+    dict_hs_1 = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
+    dict_cs_1 = Dict{Vector{Int},typeof(h0)}(copy(seq) => zeros(size(h0)))
+    dict_hs_2 = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
+    dict_cs_2 = Dict{Vector{Int},typeof(h0)}(copy(seq) => zeros(size(h0)))
     dict_ys = Dict{Vector{Int},typeof(y0)}(copy(seq) => y0)
-    return expand!(dict_hs,dict_cs,dict_ys, p, seq, T)
+    return expand!(dict_hs_1,dict_cs_1,dict_hs_2,dict_cs_2,dict_ys, p, seq, T)
 end
 
-function LSTM_kl_divergence(problem::ExcursionProblem,solution, ys_dict)  #simple adaption from NN kl div
+function LSTM_kl_divergence(problem::ExcursionProblem,policy, ys_dict)  #simple adaption from NN kl div
     D_kl = 0.0
     T = problem.trajectory_length
     total = 0.0
@@ -274,9 +289,13 @@ p0 = construct_LSTM(hidden_dim)
 #check_replay(problem, p0)
 #fd_check(problem, p0)
 p = trainLSTM(problem, 200, 10)
-hs, cs, ys = build_states(p,zeros(hidden_dim),T)
+hs_1, cs_1,hs_2,cs_2, ys = build_states(p,zeros(hidden_dim),T)
 @load "data/solutions10-200.jld2" solutions
 solution = solutions[T]
 policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy) #as it has a third key indexing T which is not needed here
 Kl = LSTM_kl_divergence(problem,policy,ys)
 println(Kl)
+
+#rewards over time
+#val state (0,0) == true returns
+#opt policy - avg returns ≈ dkl, pseudolog scale 
