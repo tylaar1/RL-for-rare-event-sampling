@@ -49,7 +49,7 @@ function construct_LSTM(hidden_dim::Int; input_dim::Int = 1)   #returns tuple of
             B_1 = vcat(zeros(hidden_dim), ones(hidden_dim), zeros(hidden_dim), ones(hidden_dim)), #input(0),forget(1),output(0),candidate(1)
             W_2 = init(4*hidden_dim,hidden_dim), #input,forget,output,candidate
             U_2 = init(4*hidden_dim,hidden_dim), #input is output of first layer so same dim as hidden
-            B_2 = vcat(zeros(hidden_dim), ones(hidden_dim), zeros(hidden_dim), ones(hidden_dim)), #input(0),forget(1),output(0),candidate(1)
+            B_2 = vcat(zeros(hidden_dim), ones(hidden_dim), zeros(hidden_dim), zeros(hidden_dim)), #input(0),forget(1),output(0),candidate(0)
             V = init(input_dim,hidden_dim), #only used for genersting logits, not for state update
             B_out = zeros(input_dim)) #only used for generating logits, not for state update
 end
@@ -134,14 +134,13 @@ end
 
 
 function trainLSTM(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
-                  hidden = 16, batch = 32, lr = 0.01, clip = 1.0)
+                  hidden = 16, batch = 128, lr = 0.01, clip = 1.0)
     @assert batch ≥ 2                           # baseline needs another traj to compare against
     T = problem.trajectory_length
     γ = problem.γ
     p = construct_LSTM(hidden)
     opt = Optimisers.setup(OptimiserChain(ClipNorm(clip), Adam(lr)), p)
     discount = γ .^ (0:T-1)                     
-
     for epoch in 1:epochs
         trajs = [rollout(problem, p) for _ in 1:batch]
         Gs    = [discounted_returns(τ.rewards, γ) for τ in trajs]
@@ -166,7 +165,9 @@ function trainLSTM(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
             @info "epoch $epoch" mean_total gnorm
         end
     end
-    return p
+    trajs = [rollout(problem, p) for _ in 1:batch] #for final evaluation - returns and p are drawn from same weights
+    mean_total = mean(sum(τ.rewards) for τ in trajs)
+    return p, mean_total
 end
 
 # ───────────── checks (AI genrated) ─────────────
@@ -229,13 +230,16 @@ function expand!(dict_hs_1, dict_cs_1, dict_hs_2, dict_cs_2, dict_ys, p, sequenc
     return dict_hs_1,dict_cs_1,dict_hs_2,dict_cs_2,dict_ys
 end
 
-function build_states(p, h0, T)
+function build_states(p, T)
+    n = length(view(p.V, 1, :))
+    h1 = zeros(n); c1 = zeros(n);
+    h2 = zeros(n); c2 = zeros(n);
     seq = [0]
-    y0 = dot(view(p.V, 1, :), h0)
-    dict_hs_1 = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
-    dict_cs_1 = Dict{Vector{Int},typeof(h0)}(copy(seq) => zeros(size(h0)))
-    dict_hs_2 = Dict{Vector{Int},typeof(h0)}(copy(seq) => h0)
-    dict_cs_2 = Dict{Vector{Int},typeof(h0)}(copy(seq) => zeros(size(h0)))
+    y0 = step!(h1, c1, h2, c2, p, zeros(n), zeros(n), zeros(n), zeros(n), 0.0) #logit not probability
+    dict_hs_1 = Dict{Vector{Int},typeof(h1)}(copy(seq) => h1)
+    dict_cs_1 = Dict{Vector{Int},typeof(c1)}(copy(seq) => c1)
+    dict_hs_2 = Dict{Vector{Int},typeof(h2)}(copy(seq) => h2)
+    dict_cs_2 = Dict{Vector{Int},typeof(c2)}(copy(seq) => c2)
     dict_ys = Dict{Vector{Int},typeof(y0)}(copy(seq) => y0)
     return expand!(dict_hs_1,dict_cs_1,dict_hs_2,dict_cs_2,dict_ys, p, seq, T)
 end
@@ -243,23 +247,21 @@ end
 function LSTM_kl_divergence(problem::ExcursionProblem,policy, ys_dict)  #simple adaption from NN kl div
     D_kl = 0.0
     T = problem.trajectory_length
-    total = 0.0
     log_p_theta = 0.0
     for i in 0:2^T-1
-        total += exp(log_p_theta)
         actions = i
         s = starting_state(problem)
         log_p_theta = 0.0
         log_p_exact = 0.0
         actions_list=Int[0]
         for _ in 1:T
-            #theta_s = ys_dict[actions_list]
+            theta_s = ys_dict[actions_list]
             a = actions % 2 + 1  # action space is 1/2 not 0/1
             push!(actions_list, 2*(actions % 2) - 1)
             actions >>= 1
             s_prime = next_state(problem, s, a)
 
-            theta_s = ys_dict[actions_list]
+            #theta_s = ys_dict[actions_list]
             exact_s = policy[s]
 
             if a == 2 #swapped for equivelant functions in log terms for numerical stability
@@ -277,24 +279,38 @@ function LSTM_kl_divergence(problem::ExcursionProblem,policy, ys_dict)  #simple 
             D_kl += exp(log_p_theta) * (log_p_theta - log_p_exact)
         end
     end
-    total += exp(log_p_theta)
     Scaled_D_KL = D_kl/T
-    return Scaled_D_KL,total
+    return Scaled_D_KL
 end
     
 T = 10
-problem = ExcursionProblem(def_problem(T, 0.5, -1.0), T, 1.0)
+problem = ExcursionProblem(def_problem(T, 5.0, -10.0), T, 1.0)
 hidden_dim = 16
 p0 = construct_LSTM(hidden_dim)
 #check_replay(problem, p0)
 #fd_check(problem, p0)
-p = trainLSTM(problem, 200, 10)
-hs_1, cs_1,hs_2,cs_2, ys = build_states(p,zeros(hidden_dim),T)
 @load "data/solutions10-200.jld2" solutions
 solution = solutions[T]
-policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy) #as it has a third key indexing T which is not needed here
-Kl = LSTM_kl_divergence(problem,policy,ys)
-println(Kl)
+policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy)
+rs = []
+kls = []
+for i in 1:10
+    p, returns = trainLSTM(problem, 500, 10)
+    hs_1, cs_1,hs_2,cs_2, ys = build_states(p,T)
+    policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy)
+    Kl = LSTM_kl_divergence(problem,policy,ys)
+    push!(kls, Kl)
+    push!(rs, returns)
+end
+returns = mean(rs)
+Kl = mean(kls)
+println("Standard deviation of returns: ", std(rs))
+println("Standard deviation of KL divergence: ", std(kls.*T))
+println("Mean returns: ", returns)
+println("Mean KL divergence: ", Kl)
+println("Solution value: ", solution.values[0,0,T])
+println("Difference: ", solution.values[0,0,T]-returns)
+println("KL Divergence (unscaled): ", Kl*T)
 
 #rewards over time
 #val state (0,0) == true returns
