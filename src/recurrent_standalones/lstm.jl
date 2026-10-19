@@ -1,4 +1,4 @@
-using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics, JLD2, LogExpFunctions
+using LinearAlgebra, NNlib, Enzyme, Optimisers, Random, Statistics, JLD2, LogExpFunctions, CairoMakie
 
 const Reverse = Enzyme.Reverse #as multple packages export reverse
 
@@ -140,7 +140,8 @@ function trainLSTM(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
     γ = problem.γ
     p = construct_LSTM(hidden)
     opt = Optimisers.setup(OptimiserChain(ClipNorm(clip), Adam(lr)), p)
-    discount = γ .^ (0:T-1)                     
+    discount = γ .^ (0:T-1)  
+    history = Float64[]                   
     for epoch in 1:epochs
         trajs = [rollout(problem, p) for _ in 1:batch]
         Gs    = [discounted_returns(τ.rewards, γ) for τ in trajs]
@@ -162,12 +163,13 @@ function trainLSTM(problem::ExcursionProblem, epochs::Int, LOG_INTERVAL::Int;
 
         if epoch % LOG_INTERVAL == 0
             mean_total = mean(sum(τ.rewards) for τ in trajs)
+            push!(history, mean_total)
             @info "epoch $epoch" mean_total gnorm
         end
     end
     trajs = [rollout(problem, p) for _ in 1:batch] #for final evaluation - returns and p are drawn from same weights
     mean_total = mean(sum(τ.rewards) for τ in trajs)
-    return p, mean_total
+    return p, mean_total, history
 end
 
 # ───────────── checks (AI genrated) ─────────────
@@ -282,8 +284,29 @@ function LSTM_kl_divergence(problem::ExcursionProblem,policy, ys_dict)  #simple 
     Scaled_D_KL = D_kl/T
     return Scaled_D_KL
 end
-    
-T = 10
+
+function KL_logging(rs, kls, solution, T) #where T low enough to D_kl exact solution
+    returns = mean(rs)
+    Kl = mean(kls)
+    println("Standard deviation of returns: ", std(rs))
+    println("Standard deviation of KL divergence: ", std(kls.*T))
+    println("Mean returns: ", returns)
+    println("Solution value: ", solution.values[0,0,T])
+    println("Difference: ", solution.values[0,0,T]-returns)
+    println("KL Divergence (unscaled): ", Kl*T)
+end
+
+
+function KL_approx(rs,solution, T) #if D_kl too expensive use difference as approx
+    returns = mean(rs)
+    println("Mean returns: ", returns)
+    println("Standard deviation of returns: ", std(rs))
+    println("Solution Value", solution.values[0,0,T])
+    println("Difference: ", solution.values[0,0,T]-returns)
+end
+
+"""
+T = 200
 problem = ExcursionProblem(def_problem(T, 5.0, -10.0), T, 1.0)
 hidden_dim = 16
 p0 = construct_LSTM(hidden_dim)
@@ -295,23 +318,93 @@ policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy)
 rs = []
 kls = []
 for i in 1:10
-    p, returns = trainLSTM(problem, 500, 10)
-    hs_1, cs_1,hs_2,cs_2, ys = build_states(p,T)
-    policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy)
-    Kl = LSTM_kl_divergence(problem,policy,ys)
-    push!(kls, Kl)
+    p, returns = trainLSTM(problem, 5000, 10)
+    #hs_1, cs_1,hs_2,cs_2, ys = build_states(p,T)
+    #policy = Dict((k[1], k[2]) => v for (k, v) in solution.policy)
+    #Kl = LSTM_kl_divergence(problem,policy,ys)
+    #push!(kls, Kl)
     push!(rs, returns)
 end
-returns = mean(rs)
-Kl = mean(kls)
-println("Standard deviation of returns: ", std(rs))
-println("Standard deviation of KL divergence: ", std(kls.*T))
-println("Mean returns: ", returns)
-println("Mean KL divergence: ", Kl)
-println("Solution value: ", solution.values[0,0,T])
-println("Difference: ", solution.values[0,0,T]-returns)
-println("KL Divergence (unscaled): ", Kl*T)
+
+#KL_logging(rs, kls, solution, T)
+KL_approx(rs,solution, T)
 
 #rewards over time
-#val state (0,0) == true returns
 #opt policy - avg returns ≈ dkl, pseudolog scale 
+"""
+
+function run_T(T; nseeds = 5, epochs = 2000, log_interval = 10, hidden = 32)
+    problem = ExcursionProblem(def_problem(T, 5.0, -10.0), T, 1.0)
+    curves = [trainLSTM(problem, epochs, log_interval; hidden = hidden)[3] for _ in 1:nseeds]
+    return reduce(hcat, curves)                      # (n_logs × nseeds)
+end
+
+function plot_returns(Ts; nseeds = 5, epochs = 1000, log_interval = 10)
+    @load "data/solutions10-200.jld2" solutions
+    xs = collect(log_interval:log_interval:epochs)
+    colors = Makie.wong_colors()
+
+    fig = Figure(size = (1200, 450))
+    ax1 = Axis(fig[1, 1]; xlabel = "epoch", ylabel = "mean return", title = "Return vs epoch",yscale = Makie.pseudolog10)
+    ax2 = Axis(fig[1, 2]; xlabel = "epoch", ylabel = "V* − return",
+               title = "Estimated D_KL", yscale = log10)
+
+    for (i, T) in enumerate(Ts)
+        C = run_T(T; nseeds, epochs, log_interval)
+        μ = vec(mean(C, dims = 2)); σ = vec(std(C, dims = 2))
+        Vstar = solutions[T].values[0, 0, T] ./ T
+        c = colors[mod1(i, length(colors))]
+
+        band!(ax1, xs, μ .- σ, μ .+ σ; color = (c, 0.2))
+        lines!(ax1, xs, μ; color = c, label = "T=$T")
+        hlines!(ax1, [Vstar]; color = c, linestyle = :dash)
+
+        gap = max.(Vstar .- μ, 1e-3)                 # floor so the log axis survives noise
+        lines!(ax2, xs, gap; color = c, label = "T=$T")
+    end
+
+    axislegend(ax1; position = :rb)
+    axislegend(ax2; position = :rt)
+    save("returns_vs_epochs.svg", fig)
+    return fig
+end
+
+function plot_est_vs_true_kl(Ts; nseeds = 5, epochs = 1000, log_interval = 1000)
+    @load "data/solutions10-200.jld2" solutions
+    xs = Ts
+    true_kl = Float64[]
+    true_kl_std = Float64[]
+    est_kl = Float64[]
+    est_kl_std = Float64[]
+    fig = Figure(size = (600, 450))
+    for T in Ts
+        problem = ExcursionProblem(def_problem(T, 5.0, -10.0), T, 1.0)
+        exact_value = solutions[T].values[0, 0, T]
+        est_kl_T = []
+        true_kl_T = []
+        policy = Dict((k[1], k[2]) => v for (k, v) in solutions[T].policy)
+        for _ in 1:nseeds
+            p, returns = trainLSTM(problem, epochs, log_interval)
+            ys = build_states(p,T)[5]
+            Kl = LSTM_kl_divergence(problem,policy,ys)[1]
+            push!(true_kl, Kl)
+            push!(est_kl_T, (exact_value - returns)/T)
+        end
+        push!(est_kl, mean(est_kl_T))
+        push!(est_kl_std, std(est_kl_T))
+        push!(true_kl, mean(true_kl_T))
+        push!(true_kl_std, std(true_kl_T))
+    end
+    ax = Axis(fig[1, 1]; xlabel = "T", ylabel = "D_KL", title = "Estimated vs true D_KL")
+
+    lines!(ax, xs, true_kl; color = :blue, label = "True D_KL")
+    lines!(ax, xs, est_kl; color = :red, label = "Estimated D_KL")
+    band!(ax, xs, est_kl .- est_kl_std, est_kl .+ est_kl_std; color = (:red, 0.2))
+    band!(ax, xs, true_kl .- true_kl_std, true_kl .+ true_kl_std; color = (:blue, 0.2))
+    axislegend(ax; position = :rt)
+    save("est_vs_true_kl.svg", fig)
+    return fig
+end
+
+plot_est_vs_true_kl([10,12,14,16,18,20])
+plot_returns([10, 20, 50, 100])
