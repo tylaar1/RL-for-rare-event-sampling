@@ -350,9 +350,9 @@ function plot_returns(Ts; nseeds = 5, epochs = 1000, log_interval = 10)
                title = "Estimated D_KL", yscale = log10)
 
     for (i, T) in enumerate(Ts)
-        C = run_T(T; nseeds, epochs, log_interval)
+        C = run_T(T; nseeds, epochs, log_interval) ./T
         μ = vec(mean(C, dims = 2)); σ = vec(std(C, dims = 2))
-        Vstar = solutions[T].values[0, 0, T] ./ T
+        Vstar = solutions[T].values[0, 0, T] ./T
         c = colors[mod1(i, length(colors))]
 
         band!(ax1, xs, μ .- σ, μ .+ σ; color = (c, 0.2))
@@ -387,7 +387,7 @@ function plot_est_vs_true_kl(Ts; nseeds = 5, epochs = 1000, log_interval = 1000)
             p, returns = trainLSTM(problem, epochs, log_interval)
             ys = build_states(p,T)[5]
             Kl = LSTM_kl_divergence(problem,policy,ys)[1]
-            push!(true_kl, Kl)
+            push!(true_kl_T, Kl)
             push!(est_kl_T, (exact_value - returns)/T)
         end
         push!(est_kl, mean(est_kl_T))
